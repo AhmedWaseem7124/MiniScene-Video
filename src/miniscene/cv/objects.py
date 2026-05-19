@@ -1,0 +1,1275 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from miniscene.cv.motion import CameraIntrinsics
+from miniscene.config import DEFAULT_MINISCENE_CONFIG
+from miniscene.recon.reconstruct import camera_to_world, pixel_to_camera_point
+
+
+@dataclass
+class ObjectObservation:
+    frame_index: int
+    label: str
+    score: float
+    track_id: int | None
+    bbox_xyxy: tuple[int, int, int, int]
+    position_world: np.ndarray
+    distance_m: float
+
+
+@dataclass
+class SceneObject:
+    object_id: int
+    label: str
+    position_world: np.ndarray
+    distance_m: float
+    observations: int
+    size_m: tuple[float, float, float] | None = None
+    representative_frame_index: int | None = None
+    representative_bbox_xyxy: tuple[int, int, int, int] | None = None
+    representative_score: float | None = None
+    sprite_file: str | None = None
+
+
+@dataclass
+class SceneTrackSample:
+    frame_index: int
+    position_world: np.ndarray
+    distance_m: float
+    score: float | None = None
+    bbox_xyxy: tuple[int, int, int, int] | None = None
+
+
+@dataclass
+class SceneTrack:
+    track_id: int
+    label: str
+    samples: list[SceneTrackSample]
+
+
+def _center_depth(depth_map: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> float:
+    h, w = depth_map.shape[:2]
+    x1 = max(0, min(w - 1, x1))
+    x2 = max(0, min(w - 1, x2))
+    y1 = max(0, min(h - 1, y1))
+    y2 = max(0, min(h - 1, y2))
+
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
+    rx1 = x1 + int(0.25 * bw)
+    rx2 = x1 + int(0.75 * bw)
+    ry1 = y1 + int(0.45 * bh)
+    ry2 = y1 + int(0.85 * bh)
+    rx1 = max(0, min(w - 1, rx1))
+    rx2 = max(0, min(w - 1, rx2))
+    ry1 = max(0, min(h - 1, ry1))
+    ry2 = max(0, min(h - 1, ry2))
+    if rx2 <= rx1 or ry2 <= ry1:
+        return 0.0
+
+    patch = depth_map[ry1:ry2, rx1:rx2]
+    if patch.size == 0:
+        return 0.0
+
+    valid = patch[np.isfinite(patch)]
+    if valid.size == 0:
+        return 0.0
+
+    # Use a closer quantile to avoid locking onto background behind the object.
+    return float(np.quantile(valid, 0.35))
+
+
+def _robust_bbox_depth(depth_map: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> tuple[float, int]:
+    """Extract robust depth from bbox region using median of entire region + nearby area.
+    
+    Returns: (depth_m, valid_count) for validation and logging.
+    """
+    h, w = depth_map.shape[:2]
+    x1 = max(0, min(w - 1, x1))
+    x2 = max(0, min(w, x2))
+    y1 = max(0, min(h - 1, y1))
+    y2 = max(0, min(h, y2))
+
+    if x2 <= x1 or y2 <= y1:
+        return 0.0, 0
+
+    # Sample depth from object region (inner 80% to avoid edge artifacts).
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
+    inner_x1 = x1 + int(0.10 * bw)
+    inner_x2 = x1 + int(0.90 * bw)
+    inner_y1 = y1 + int(0.10 * bh)
+    inner_y2 = y1 + int(0.90 * bh)
+    
+    inner_x1 = max(0, min(w - 1, inner_x1))
+    inner_x2 = max(0, min(w, inner_x2))
+    inner_y1 = max(0, min(h - 1, inner_y1))
+    inner_y2 = max(0, min(h, inner_y2))
+    
+    if inner_x2 <= inner_x1 or inner_y2 <= inner_y1:
+        return 0.0, 0
+
+    patch = depth_map[inner_y1:inner_y2, inner_x1:inner_x2]
+    if patch.size == 0:
+        return 0.0, 0
+
+    valid = patch[np.isfinite(patch)]
+    if valid.size == 0:
+        return 0.0, 0
+
+    # Use median of inner region for stability; fallback to 30th percentile if needed.
+    depth = float(np.median(valid))
+    if depth <= 0.01 or not np.isfinite(depth):
+        depth = float(np.percentile(valid, 30))
+    
+    return max(0.01, float(depth)), int(valid.size)
+
+
+def _mask_depth_and_center(
+    depth_map: np.ndarray,
+    bbox_xyxy: tuple[int, int, int, int],
+    mask: np.ndarray | None,
+) -> tuple[float, int, tuple[int, int, int, int], tuple[int, int]]:
+    """Estimate depth and a stable center from a segmentation mask when available.
+
+    Falls back to bbox-based depth if no usable mask exists.
+    """
+    x1, y1, x2, y2 = [int(v) for v in bbox_xyxy]
+    h, w = depth_map.shape[:2]
+
+    if mask is None:
+        depth, valid_count = _robust_bbox_depth(depth_map, x1, y1, x2, y2)
+        cx = int((x1 + x2) / 2)
+        cy = int((y1 + y2) / 2)
+        return depth, valid_count, (x1, y1, x2, y2), (cx, cy)
+
+    mask_arr = np.asarray(mask)
+    if mask_arr.ndim != 2:
+        depth, valid_count = _robust_bbox_depth(depth_map, x1, y1, x2, y2)
+        cx = int((x1 + x2) / 2)
+        cy = int((y1 + y2) / 2)
+        return depth, valid_count, (x1, y1, x2, y2), (cx, cy)
+
+    if mask_arr.shape[:2] != (h, w):
+        mask_arr = cv2.resize(mask_arr.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+
+    mask_bin = mask_arr > 0.5
+    if not np.any(mask_bin):
+        depth, valid_count = _robust_bbox_depth(depth_map, x1, y1, x2, y2)
+        cx = int((x1 + x2) / 2)
+        cy = int((y1 + y2) / 2)
+        return depth, valid_count, (x1, y1, x2, y2), (cx, cy)
+
+    bx1 = max(0, min(w - 1, x1))
+    bx2 = max(0, min(w, x2))
+    by1 = max(0, min(h - 1, y1))
+    by2 = max(0, min(h, y2))
+    bbox_mask = np.zeros((h, w), dtype=bool)
+    bbox_mask[by1:by2, bx1:bx2] = True
+    sample_mask = mask_bin & bbox_mask & np.isfinite(depth_map)
+
+    valid = depth_map[sample_mask]
+    if valid.size == 0:
+        depth, valid_count = _robust_bbox_depth(depth_map, x1, y1, x2, y2)
+        cx = int((x1 + x2) / 2)
+        cy = int((y1 + y2) / 2)
+        return depth, valid_count, (x1, y1, x2, y2), (cx, cy)
+
+    depth = float(np.median(valid))
+    if depth <= 0.01 or not np.isfinite(depth):
+        depth = float(np.percentile(valid, 30))
+
+    ys, xs = np.where(sample_mask)
+    if xs.size == 0 or ys.size == 0:
+        cx = int((x1 + x2) / 2)
+        cy = int((y1 + y2) / 2)
+        refined_bbox = (x1, y1, x2, y2)
+    else:
+        cx = int(np.round(float(np.mean(xs))))
+        cy = int(np.round(float(np.mean(ys))))
+        refined_bbox = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+
+    return max(0.01, float(depth)), int(valid.size), refined_bbox, (cx, cy)
+
+
+def _load_yolo_detector(model_name: str = "yolov8n.pt") -> object:
+    from ultralytics import YOLO
+
+    return YOLO(model_name)
+
+
+COMMON_OBJECT_LABELS = {
+    "person",
+    "chair",
+    "couch",
+    "sofa",
+    "dining table",
+    "table",
+}
+
+
+CLASS_SCORE_THRESHOLDS = {
+    # Keep common indoor classes more permissive by default.
+    "person": 0.20,
+    "chair": 0.20,
+    "couch": 0.20,
+    "sofa": 0.20,
+    "dining table": 0.20,
+    "table": 0.20,
+}
+
+
+def _adaptive_conf_schedule(base_conf: float) -> list[float]:
+    base = float(max(0.05, min(0.95, base_conf)))
+    floor = min(0.20, base)
+    schedule = [base]
+    while schedule[-1] - 1e-6 > floor:
+        schedule.append(max(floor, schedule[-1] - 0.10))
+    if schedule[-1] > floor + 1e-6:
+        schedule.append(floor)
+
+    # Preserve order while removing duplicate values from clamping.
+    out: list[float] = []
+    seen: set[float] = set()
+    for v in schedule:
+        key = round(float(v), 3)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(float(v))
+    return out
+
+
+def _label_threshold(label: str, base_threshold: float) -> float:
+    label_key = label.strip().lower()
+    class_t = CLASS_SCORE_THRESHOLDS.get(label_key)
+    if class_t is None:
+        return float(base_threshold)
+    # Never be stricter than the global setting for known common classes.
+    return float(min(base_threshold, class_t))
+
+
+def detect_objects_3d(
+    frames_bgr: list[np.ndarray],
+    depth_maps: list[np.ndarray],
+    poses_world_from_cam: list[np.ndarray],
+    intrinsics: CameraIntrinsics,
+    score_threshold: float = DEFAULT_MINISCENE_CONFIG.confidence_base,
+    iou_threshold: float = DEFAULT_MINISCENE_CONFIG.iou_threshold,
+    max_per_frame: int = 6,
+    dedup_enable: bool = True,
+    dedup_merge_radius_m: float = 1.2,
+    dedup_feature_similarity: float = 0.72,
+) -> list[SceneObject]:
+    if not frames_bgr:
+        return []
+
+    observations = _detect_observations(
+        frames_bgr=frames_bgr,
+        depth_maps=depth_maps,
+        poses_world_from_cam=poses_world_from_cam,
+        intrinsics=intrinsics,
+        score_threshold=score_threshold,
+        iou_threshold=iou_threshold,
+        max_per_frame=max_per_frame,
+        label_allowlist=None,
+    )
+    tracks = _build_tracks(observations, min_samples=1)
+    if dedup_enable:
+        tracks = deduplicate_tracks_with_feature_matching(
+            tracks,
+            frames_bgr,
+            merge_radius_m=float(dedup_merge_radius_m),
+            feature_similarity_threshold=float(dedup_feature_similarity),
+        )
+    return _objects_from_tracks(tracks, merge_radius_m=1.0)
+
+
+def detect_scene_entities_3d(
+    frames_bgr: list[np.ndarray],
+    depth_maps: list[np.ndarray],
+    poses_world_from_cam: list[np.ndarray],
+    intrinsics: CameraIntrinsics,
+    score_threshold: float = DEFAULT_MINISCENE_CONFIG.confidence_base,
+    iou_threshold: float = DEFAULT_MINISCENE_CONFIG.iou_threshold,
+    max_per_frame: int = 6,
+    label_allowlist: set[str] | None = None,
+    min_track_samples: int = DEFAULT_MINISCENE_CONFIG.min_track_length,
+    min_object_observations: int = 2,
+    max_instances_by_label: dict[str, int] | None = None,
+    dedup_enable: bool = True,
+    dedup_merge_radius_m: float = 1.2,
+    dedup_feature_similarity: float = 0.72,
+) -> tuple[list[SceneObject], list[SceneTrack]]:
+    observations = _detect_observations(
+        frames_bgr=frames_bgr,
+        depth_maps=depth_maps,
+        poses_world_from_cam=poses_world_from_cam,
+        intrinsics=intrinsics,
+        score_threshold=score_threshold,
+        iou_threshold=iou_threshold,
+        max_per_frame=max_per_frame,
+        label_allowlist=label_allowlist,
+    )
+    tracks = _build_tracks(observations, min_samples=min_track_samples)
+    if dedup_enable:
+        tracks = deduplicate_tracks_with_feature_matching(
+            tracks,
+            frames_bgr,
+            merge_radius_m=float(dedup_merge_radius_m),
+            feature_similarity_threshold=float(dedup_feature_similarity),
+        )
+    objects = _objects_from_tracks(tracks, merge_radius_m=1.0)
+    if min_object_observations > 1:
+        objects = [o for o in objects if o.observations >= min_object_observations]
+
+    if max_instances_by_label:
+        tracks = _prune_tracks_by_label_limit(tracks, max_instances_by_label)
+        objects = _prune_objects_by_label_limit(objects, tracks, max_instances_by_label)
+
+    return objects, tracks
+
+
+def deduplicate_tracks_with_feature_matching(
+    tracks: list[SceneTrack],
+    frames_bgr: list[np.ndarray],
+    merge_radius_m: float = 1.2,
+    feature_similarity_threshold: float = 0.72,
+) -> list[SceneTrack]:
+    """Merge fragmented tracks of the same object using 3D proximity and ORB appearance similarity."""
+    if not tracks or not frames_bgr:
+        return tracks
+
+    signatures: list[dict[str, object]] = []
+    for tr in tracks:
+        pts = np.asarray([s.position_world for s in tr.samples], dtype=np.float32)
+        if pts.size == 0:
+            center = np.zeros((3,), dtype=np.float32)
+        else:
+            center = np.median(pts, axis=0).astype(np.float32)
+        desc = _track_appearance_descriptor(tr, frames_bgr)
+        signatures.append({"track": tr, "center": center, "desc": desc})
+
+    n = len(signatures)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra = find(a)
+        rb = find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(n):
+        ti = signatures[i]["track"]
+        ci = signatures[i]["center"]
+        di = signatures[i]["desc"]
+        if not isinstance(ti, SceneTrack) or not isinstance(ci, np.ndarray):
+            continue
+
+        for j in range(i + 1, n):
+            tj = signatures[j]["track"]
+            cj = signatures[j]["center"]
+            dj = signatures[j]["desc"]
+            if not isinstance(tj, SceneTrack) or not isinstance(cj, np.ndarray):
+                continue
+            if ti.label != tj.label:
+                continue
+
+            d_world = float(np.linalg.norm(ci - cj))
+            if not np.isfinite(d_world) or d_world > merge_radius_m:
+                continue
+
+            sim = _descriptor_similarity(di, dj)
+            if sim is None:
+                # If appearance is unavailable, require stricter geometric closeness.
+                if d_world <= 0.55 * merge_radius_m:
+                    union(i, j)
+                continue
+
+            if sim >= feature_similarity_threshold:
+                union(i, j)
+
+    grouped: dict[int, list[SceneTrack]] = {}
+    for idx, sig in enumerate(signatures):
+        tr = sig["track"]
+        if not isinstance(tr, SceneTrack):
+            continue
+        grouped.setdefault(find(idx), []).append(tr)
+
+    merged_tracks: list[SceneTrack] = []
+    next_track_id = 1
+    for _, grp in grouped.items():
+        if len(grp) == 1:
+            t = grp[0]
+            merged_tracks.append(SceneTrack(track_id=next_track_id, label=t.label, samples=list(t.samples)))
+            next_track_id += 1
+            continue
+
+        label = grp[0].label
+        samples: list[SceneTrackSample] = []
+        for tr in grp:
+            samples.extend(tr.samples)
+
+        samples.sort(key=lambda s: (s.frame_index, float(s.distance_m)))
+        merged_tracks.append(SceneTrack(track_id=next_track_id, label=label, samples=samples))
+        next_track_id += 1
+
+    merged_tracks.sort(key=lambda t: (-len(t.samples), t.label, t.track_id))
+    return merged_tracks
+
+
+def _track_appearance_descriptor(track: SceneTrack, frames_bgr: list[np.ndarray]) -> np.ndarray | None:
+    if not track.samples:
+        return None
+
+    best_sample = max(track.samples, key=lambda s: float(s.score or 0.0))
+    if best_sample.bbox_xyxy is None:
+        return None
+
+    fi = int(best_sample.frame_index)
+    if fi < 0 or fi >= len(frames_bgr):
+        return None
+
+    frame = frames_bgr[fi]
+    x1, y1, x2, y2 = [int(v) for v in best_sample.bbox_xyxy]
+    h, w = frame.shape[:2]
+    x1 = max(0, min(w - 1, x1))
+    x2 = max(0, min(w, x2))
+    y1 = max(0, min(h - 1, y1))
+    y2 = max(0, min(h, y2))
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    orb = cv2.ORB_create(nfeatures=128)
+    _, desc = orb.detectAndCompute(gray, None)
+    if desc is None or len(desc) == 0:
+        return None
+
+    v = np.mean(desc.astype(np.float32), axis=0)
+    norm = float(np.linalg.norm(v))
+    if norm <= 1e-6:
+        return None
+    return (v / norm).astype(np.float32)
+
+
+def _descriptor_similarity(a: np.ndarray | None, b: np.ndarray | None) -> float | None:
+    if a is None or b is None:
+        return None
+    if a.shape != b.shape or a.ndim != 1:
+        return None
+    sim = float(np.dot(a, b))
+    if not np.isfinite(sim):
+        return None
+    return sim
+
+
+def refine_objects_with_point_cloud(
+    objects: list[SceneObject],
+    points_world: np.ndarray,
+    k_neighbors: int = 256,
+    max_snap_radius_m: float = 1.8,
+) -> list[SceneObject]:
+    if not objects:
+        return objects
+    if points_world is None or len(points_world) == 0:
+        return objects
+
+    pts = np.asarray(points_world, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        return objects
+
+    for obj in objects:
+        d = np.linalg.norm(pts - obj.position_world.reshape(1, 3), axis=1)
+        if d.size == 0:
+            continue
+        order = np.argsort(d)
+        nn = order[: min(k_neighbors, order.size)]
+        if nn.size == 0:
+            continue
+        if float(d[nn[0]]) > max_snap_radius_m:
+            continue
+
+        local = pts[nn]
+        obj.position_world = np.median(local, axis=0).astype(np.float32)
+
+    return objects
+
+
+def estimate_ground_plane(points_world: np.ndarray, percentile: float = 5.0) -> float:
+    """Estimate ground plane Y coordinate from lowest points in point cloud."""
+    if points_world is None or len(points_world) == 0:
+        return 0.0
+    pts = np.asarray(points_world, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] < 10:
+        return 0.0
+    y_coords = pts[:, 1]
+    valid = y_coords[np.isfinite(y_coords)]
+    if valid.size == 0:
+        return 0.0
+    return float(np.percentile(valid, percentile))
+
+
+def align_objects_to_ground(objects: list[SceneObject], ground_y: float, object_heights: dict[str, float] | None = None) -> list[SceneObject]:
+    """Align object anchors to the ground plane so they sit on the floor."""
+    if not objects or not np.isfinite(ground_y):
+        return objects
+    for obj in objects:
+        _ = object_heights
+        obj.position_world[1] = ground_y
+    return objects
+
+
+def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) -> list[SceneObject]:
+    if not tracks:
+        return []
+
+    # Start with one object candidate per stable track.
+    candidates: list[SceneObject] = []
+    next_id = 1
+    for tr in tracks:
+        pts = np.asarray([s.position_world for s in tr.samples], dtype=np.float32)
+        if pts.size == 0:
+            continue
+        center = np.median(pts, axis=0)
+        d_median = float(np.median(np.asarray([s.distance_m for s in tr.samples], dtype=np.float32)))
+
+        best_sample = max(tr.samples, key=lambda s: float(s.score or 0.0))
+        candidates.append(
+            SceneObject(
+                object_id=next_id,
+                label=tr.label,
+                position_world=center.astype(np.float32),
+                distance_m=d_median,
+                observations=len(tr.samples),
+                representative_frame_index=int(best_sample.frame_index),
+                representative_bbox_xyxy=best_sample.bbox_xyxy,
+                representative_score=float(best_sample.score) if best_sample.score is not None else None,
+            )
+        )
+        next_id += 1
+
+    # Merge fragmented tracks for the same semantic object.
+    merged: list[SceneObject] = []
+    for obj in sorted(candidates, key=lambda o: (-o.observations, o.distance_m)):
+        match_idx = -1
+        best_d = 1e9
+        for i, m in enumerate(merged):
+            if m.label != obj.label:
+                continue
+            d = float(np.linalg.norm(obj.position_world - m.position_world))
+            if d < merge_radius_m and d < best_d:
+                best_d = d
+                match_idx = i
+
+        if match_idx == -1:
+            merged.append(obj)
+            continue
+
+        m = merged[match_idx]
+        w_old = max(1, int(m.observations))
+        w_new = max(1, int(obj.observations))
+        m.position_world = ((m.position_world * w_old) + (obj.position_world * w_new)) / float(w_old + w_new)
+        m.distance_m = float((m.distance_m * w_old + obj.distance_m * w_new) / float(w_old + w_new))
+        m.observations = int(w_old + w_new)
+        if (obj.representative_score or 0.0) > (m.representative_score or 0.0):
+            m.representative_score = obj.representative_score
+            m.representative_frame_index = obj.representative_frame_index
+            m.representative_bbox_xyxy = obj.representative_bbox_xyxy
+
+    for i, o in enumerate(merged, start=1):
+        o.object_id = i
+    return merged
+
+
+def _prune_tracks_by_label_limit(tracks: list[SceneTrack], max_instances_by_label: dict[str, int]) -> list[SceneTrack]:
+    if not tracks:
+        return tracks
+
+    grouped: dict[str, list[SceneTrack]] = {}
+    for tr in tracks:
+        grouped.setdefault(tr.label, []).append(tr)
+
+    selected: list[SceneTrack] = []
+    for label, lst in grouped.items():
+        limit = max_instances_by_label.get(label)
+        if limit is None or limit <= 0:
+            selected.extend(lst)
+            continue
+
+        # Prefer tracks with more samples and longer temporal span.
+        ranked = sorted(
+            lst,
+            key=lambda t: (
+                len(t.samples),
+                (t.samples[-1].frame_index - t.samples[0].frame_index) if len(t.samples) > 1 else 0,
+            ),
+            reverse=True,
+        )
+        selected.extend(ranked[:limit])
+
+    return sorted(selected, key=lambda t: (-len(t.samples), t.label, t.track_id))
+
+
+def _prune_objects_by_label_limit(
+    objects: list[SceneObject],
+    tracks: list[SceneTrack],
+    max_instances_by_label: dict[str, int],
+) -> list[SceneObject]:
+    if not objects:
+        return objects
+
+    # Use kept track centroids as preferred anchors for stable object identity.
+    track_centers: dict[str, list[np.ndarray]] = {}
+    for tr in tracks:
+        pts = np.asarray([s.position_world for s in tr.samples], dtype=np.float32)
+        if pts.size == 0:
+            continue
+        track_centers.setdefault(tr.label, []).append(np.mean(pts, axis=0))
+
+    grouped: dict[str, list[SceneObject]] = {}
+    for obj in objects:
+        grouped.setdefault(obj.label, []).append(obj)
+
+    selected: list[SceneObject] = []
+    for label, lst in grouped.items():
+        limit = max_instances_by_label.get(label)
+        if limit is None or limit <= 0:
+            selected.extend(lst)
+            continue
+
+        centers = track_centers.get(label, [])
+        if centers:
+            def rank_key(o: SceneObject) -> tuple[float, int]:
+                d = min(float(np.linalg.norm(o.position_world - c)) for c in centers)
+                return (d, -o.observations)
+
+            ranked = sorted(lst, key=rank_key)
+        else:
+            ranked = sorted(lst, key=lambda o: (-o.observations, o.distance_m))
+
+        selected.extend(ranked[:limit])
+
+    # Reindex IDs for cleaner downstream UI.
+    for i, obj in enumerate(selected, start=1):
+        obj.object_id = i
+    return selected
+
+
+def _detect_observations(
+    frames_bgr: list[np.ndarray],
+    depth_maps: list[np.ndarray],
+    poses_world_from_cam: list[np.ndarray],
+    intrinsics: CameraIntrinsics,
+    score_threshold: float,
+    iou_threshold: float,
+    max_per_frame: int,
+    label_allowlist: set[str] | None,
+) -> list[ObjectObservation]:
+    if not frames_bgr:
+        return []
+
+    try:
+        try:
+            model = _load_yolo_detector("yolov8n-seg.pt")
+        except Exception:
+            model = _load_yolo_detector("yolov8n.pt")
+    except Exception:
+        return []
+
+    observations: list[ObjectObservation] = []
+    common_kept_total = 0
+
+    for frame_idx, (frame_bgr, depth_map, pose) in enumerate(zip(frames_bgr, depth_maps, poses_world_from_cam)):
+        used_conf = float(score_threshold)
+        kept = 0
+        frame_candidates: list[ObjectObservation] = []
+        conf_schedule = _adaptive_conf_schedule(float(score_threshold))
+
+        for conf_try in conf_schedule:
+            used_conf = float(conf_try)
+            try:
+                results = model.track(
+                    source=frame_bgr,
+                    persist=True,
+                    verbose=False,
+                    conf=used_conf,
+                    iou=float(iou_threshold),
+                    tracker="bytetrack.yaml",
+                )
+            except Exception:
+                results = None
+
+            if not results:
+                continue
+
+            r0 = results[0]
+            boxes = getattr(r0, "boxes", None)
+            if boxes is None:
+                continue
+
+            masks_obj = getattr(r0, "masks", None)
+            masks_data = None
+            if masks_obj is not None and getattr(masks_obj, "data", None) is not None:
+                masks_data = masks_obj.data.detach().cpu().numpy()
+
+            xyxy = boxes.xyxy.detach().cpu().numpy() if boxes.xyxy is not None else np.empty((0, 4), dtype=np.float32)
+            confs = boxes.conf.detach().cpu().numpy() if boxes.conf is not None else np.empty((0,), dtype=np.float32)
+            clss = boxes.cls.detach().cpu().numpy().astype(np.int32) if boxes.cls is not None else np.empty((0,), dtype=np.int32)
+            ids = boxes.id.detach().cpu().numpy().astype(np.int32) if getattr(boxes, "id", None) is not None else np.full((len(xyxy),), -1, dtype=np.int32)
+            names = getattr(r0, "names", {}) or {}
+
+            frame_candidates = []
+            for det_idx, (box, score, label_id, yolo_track_id) in enumerate(zip(xyxy, confs, clss, ids)):
+                x1, y1, x2, y2 = [int(v) for v in box]
+                label = str(names.get(int(label_id), f"obj_{int(label_id)}"))
+                label_key = label.strip().lower()
+                mask = masks_data[det_idx] if masks_data is not None and det_idx < len(masks_data) else None
+
+                if label_allowlist and label not in label_allowlist:
+                    continue
+                if float(score) < _label_threshold(label, float(score_threshold)):
+                    continue
+
+                d, valid_count, refined_bbox, center_xy = _mask_depth_and_center(depth_map, (x1, y1, x2, y2), mask)
+                if d <= 0.0 or not np.isfinite(d):
+                    continue
+
+                u, v = center_xy
+                p_cam = pixel_to_camera_point(u, v, float(d), intrinsics)
+                p_world = camera_to_world(p_cam, pose)
+
+                cam_center = pose[:3, 3]
+                dist = float(np.linalg.norm(p_world - cam_center))
+
+                frame_candidates.append(
+                    ObjectObservation(
+                        frame_index=frame_idx,
+                        label=label,
+                        score=float(score),
+                        track_id=int(yolo_track_id) if int(yolo_track_id) >= 0 else None,
+                        bbox_xyxy=refined_bbox,
+                        position_world=p_world.astype(np.float32),
+                        distance_m=dist,
+                    )
+                )
+                if label_key in COMMON_OBJECT_LABELS:
+                    common_kept_total += 1
+                if int(frame_idx) <= 1 and int(valid_count) > 0:
+                    bbox_w = max(0, refined_bbox[2] - refined_bbox[0])
+                    bbox_h = max(0, refined_bbox[3] - refined_bbox[1])
+                    source = "mask" if mask is not None else "bbox"
+                    print(f"  [depth] {label}: depth={d:.3f}m, distance={dist:.3f}m, source={source}, bbox_size=({bbox_w}x{bbox_h}), valid_pixels={valid_count}")
+
+            if frame_candidates:
+                break
+
+        if not frame_candidates and conf_schedule:
+            # Last-resort rescue for common objects at a softer threshold.
+            rescue_conf = max(0.12, min(conf_schedule[-1], float(score_threshold) * 0.40))
+            used_conf = float(rescue_conf)
+            try:
+                results = model.track(
+                    source=frame_bgr,
+                    persist=True,
+                    verbose=False,
+                    conf=used_conf,
+                    iou=float(iou_threshold),
+                    tracker="bytetrack.yaml",
+                )
+            except Exception:
+                results = None
+
+            if results:
+                r0 = results[0]
+                boxes = getattr(r0, "boxes", None)
+                if boxes is not None:
+                    masks_obj = getattr(r0, "masks", None)
+                    masks_data = None
+                    if masks_obj is not None and getattr(masks_obj, "data", None) is not None:
+                        masks_data = masks_obj.data.detach().cpu().numpy()
+
+                    xyxy = boxes.xyxy.detach().cpu().numpy() if boxes.xyxy is not None else np.empty((0, 4), dtype=np.float32)
+                    confs = boxes.conf.detach().cpu().numpy() if boxes.conf is not None else np.empty((0,), dtype=np.float32)
+                    clss = boxes.cls.detach().cpu().numpy().astype(np.int32) if boxes.cls is not None else np.empty((0,), dtype=np.int32)
+                    ids = boxes.id.detach().cpu().numpy().astype(np.int32) if getattr(boxes, "id", None) is not None else np.full((len(xyxy),), -1, dtype=np.int32)
+                    names = getattr(r0, "names", {}) or {}
+
+                    for det_idx, (box, score, label_id, yolo_track_id) in enumerate(zip(xyxy, confs, clss, ids)):
+                        x1, y1, x2, y2 = [int(v) for v in box]
+                        label = str(names.get(int(label_id), f"obj_{int(label_id)}"))
+                        label_key = label.strip().lower()
+                        mask = masks_data[det_idx] if masks_data is not None and det_idx < len(masks_data) else None
+
+                        if label_key not in COMMON_OBJECT_LABELS:
+                            continue
+                        if label_allowlist and label not in label_allowlist:
+                            continue
+                        if float(score) < rescue_conf:
+                            continue
+
+                        d, valid_count, refined_bbox, center_xy = _mask_depth_and_center(depth_map, (x1, y1, x2, y2), mask)
+                        if d <= 0.0 or not np.isfinite(d):
+                            continue
+
+                        u, v = center_xy
+                        p_cam = pixel_to_camera_point(u, v, float(d), intrinsics)
+                        p_world = camera_to_world(p_cam, pose)
+
+                        cam_center = pose[:3, 3]
+                        dist = float(np.linalg.norm(p_world - cam_center))
+
+                        frame_candidates.append(
+                            ObjectObservation(
+                                frame_index=frame_idx,
+                                label=label,
+                                score=float(score),
+                                track_id=int(yolo_track_id) if int(yolo_track_id) >= 0 else None,
+                                bbox_xyxy=refined_bbox,
+                                position_world=p_world.astype(np.float32),
+                                distance_m=dist,
+                            )
+                        )
+                        common_kept_total += 1
+
+        if frame_candidates:
+            for obs in sorted(frame_candidates, key=lambda o: o.score, reverse=True):
+                observations.append(obs)
+                kept += 1
+                if kept >= max_per_frame:
+                    break
+
+        print(f"[objects] frame={frame_idx} final_conf={used_conf:.2f} kept={kept}")
+
+    if observations and common_kept_total == 0:
+        print("[objects] warning: no common-object detections kept (person/chair/sofa/table)")
+
+    return observations
+
+
+def _cluster_observations(observations: list[ObjectObservation], merge_radius_m: float = 0.9) -> list[SceneObject]:
+    if not observations:
+        return []
+
+    clusters: list[dict] = []
+    for obs in observations:
+        chosen_idx = -1
+        best_d = 1e9
+        for idx, c in enumerate(clusters):
+            if c["label"] != obs.label:
+                continue
+            d = float(np.linalg.norm(obs.position_world - c["center"]))
+            if d < merge_radius_m and d < best_d:
+                best_d = d
+                chosen_idx = idx
+
+        if chosen_idx == -1:
+            clusters.append(
+                {
+                    "label": obs.label,
+                    "points": [obs.position_world],
+                    "distances": [obs.distance_m],
+                    "center": obs.position_world.copy(),
+                    "widths_m": [max(0.05, _bbox_width_m(obs, obs.distance_m))],
+                    "heights_m": [max(0.05, _bbox_height_m(obs, obs.distance_m))],
+                    "best_obs": obs,
+                }
+            )
+        else:
+            c = clusters[chosen_idx]
+            c["points"].append(obs.position_world)
+            c["distances"].append(obs.distance_m)
+            c["center"] = np.mean(np.asarray(c["points"], dtype=np.float32), axis=0)
+            c["widths_m"].append(max(0.05, _bbox_width_m(obs, obs.distance_m)))
+            c["heights_m"].append(max(0.05, _bbox_height_m(obs, obs.distance_m)))
+            if obs.score > c["best_obs"].score:
+                c["best_obs"] = obs
+
+    result: list[SceneObject] = []
+    for i, c in enumerate(clusters, start=1):
+        pts = np.asarray(c["points"], dtype=np.float32)
+        center = np.median(pts, axis=0)
+        d_median = float(np.median(np.asarray(c["distances"], dtype=np.float32)))
+        w_m = float(np.median(np.asarray(c["widths_m"], dtype=np.float32)))
+        h_m = float(np.median(np.asarray(c["heights_m"], dtype=np.float32)))
+        d_m = max(0.08, min(w_m, h_m) * 0.8)
+        best_obs: ObjectObservation = c["best_obs"]
+        result.append(
+            SceneObject(
+                object_id=i,
+                label=str(c["label"]),
+                position_world=center.astype(np.float32),
+                distance_m=d_median,
+                observations=len(c["points"]),
+                size_m=(w_m, h_m, d_m),
+                representative_frame_index=int(best_obs.frame_index),
+                representative_bbox_xyxy=tuple(int(v) for v in best_obs.bbox_xyxy),
+                representative_score=float(best_obs.score),
+            )
+        )
+
+    result.sort(key=lambda o: (-o.observations, o.distance_m))
+    return result
+
+
+def _bbox_iou(a: tuple[int, int, int, int] | None, b: tuple[int, int, int, int] | None) -> float:
+    if a is None or b is None:
+        return 0.0
+
+    ax1, ay1, ax2, ay2 = [int(v) for v in a]
+    bx1, by1, bx2, by2 = [int(v) for v in b]
+
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+
+    iw = max(0, ix2 - ix1)
+    ih = max(0, iy2 - iy1)
+    inter = float(iw * ih)
+    if inter <= 0.0:
+        return 0.0
+
+    area_a = float(max(0, ax2 - ax1) * max(0, ay2 - ay1))
+    area_b = float(max(0, bx2 - bx1) * max(0, by2 - by1))
+    union = area_a + area_b - inter
+    if union <= 1e-6:
+        return 0.0
+    return float(inter / union)
+
+
+def _build_tracks(
+    observations: list[ObjectObservation],
+    match_iou_threshold: float = 0.25,
+    max_missed_frames: int = 3,
+    min_samples: int = 2,
+) -> list[SceneTrack]:
+    if not observations:
+        return []
+
+    grouped: dict[int, list[ObjectObservation]] = {}
+    for obs in observations:
+        grouped.setdefault(int(obs.frame_index), []).append(obs)
+
+    frame_indices = sorted(grouped.keys())
+    active_tracks: list[dict[str, object]] = []
+    finished_tracks: list[dict[str, object]] = []
+    next_track_id = 1
+
+    def _new_track(obs: ObjectObservation, track_id: int) -> dict[str, object]:
+        sample = SceneTrackSample(
+            frame_index=int(obs.frame_index),
+            position_world=obs.position_world.astype(np.float32),
+            distance_m=float(obs.distance_m),
+            score=float(obs.score),
+            bbox_xyxy=tuple(int(v) for v in obs.bbox_xyxy),
+        )
+        return {
+            "track_id": int(track_id),
+            "label": obs.label,
+            "samples": [sample],
+            "last_bbox": tuple(int(v) for v in obs.bbox_xyxy),
+            "missed": 0,
+            "hits": 1,
+            "running_position": obs.position_world.astype(np.float32),
+            "running_confidence": float(obs.score),
+            "stable": bool(int(min_samples) <= 1),
+        }
+
+    def _finalize_stable_track(tr: dict[str, object]) -> None:
+        if not bool(tr.get("stable", False)):
+            return
+        samples = tr.get("samples", [])
+        if not isinstance(samples, list) or len(samples) < int(min_samples):
+            return
+        finished_tracks.append(tr)
+
+    for frame_idx in frame_indices:
+        frame_obs = sorted(grouped[frame_idx], key=lambda o: float(o.score), reverse=True)
+
+        pairs: list[tuple[float, int, int]] = []
+        for obs_idx, obs in enumerate(frame_obs):
+            for tr_idx, tr in enumerate(active_tracks):
+                if str(tr.get("label")) != obs.label:
+                    continue
+                iou = _bbox_iou(tr.get("last_bbox"), obs.bbox_xyxy)
+                if iou < float(match_iou_threshold):
+                    continue
+                pairs.append((float(iou), obs_idx, tr_idx))
+
+        pairs.sort(reverse=True, key=lambda x: x[0])
+        matched_obs: set[int] = set()
+        matched_tracks: set[int] = set()
+
+        for _, obs_idx, tr_idx in pairs:
+            if obs_idx in matched_obs or tr_idx in matched_tracks:
+                continue
+
+            obs = frame_obs[obs_idx]
+            tr = active_tracks[tr_idx]
+            hits = int(tr.get("hits", 0))
+            avg_pos = np.asarray(tr.get("running_position"), dtype=np.float32)
+            if avg_pos.shape != (3,):
+                avg_pos = obs.position_world.astype(np.float32)
+            avg_conf = float(tr.get("running_confidence", float(obs.score)))
+
+            new_hits = hits + 1
+            new_avg_pos = ((avg_pos * hits) + obs.position_world.astype(np.float32)) / float(new_hits)
+            new_avg_conf = ((avg_conf * hits) + float(obs.score)) / float(new_hits)
+
+            samples_obj = tr.get("samples", [])
+            if isinstance(samples_obj, list):
+                samples_obj.append(
+                    SceneTrackSample(
+                        frame_index=int(obs.frame_index),
+                        position_world=new_avg_pos.astype(np.float32),
+                        distance_m=float(obs.distance_m),
+                        score=float(obs.score),
+                        bbox_xyxy=tuple(int(v) for v in obs.bbox_xyxy),
+                    )
+                )
+
+            tr["running_position"] = new_avg_pos.astype(np.float32)
+            tr["running_confidence"] = float(new_avg_conf)
+            tr["last_bbox"] = tuple(int(v) for v in obs.bbox_xyxy)
+            tr["missed"] = 0
+            tr["hits"] = new_hits
+            tr["stable"] = bool(new_hits >= int(min_samples))
+
+            matched_obs.add(obs_idx)
+            matched_tracks.add(tr_idx)
+
+        for tr_idx, tr in enumerate(active_tracks):
+            if tr_idx in matched_tracks:
+                continue
+            tr["missed"] = int(tr.get("missed", 0)) + 1
+
+        survivors: list[dict[str, object]] = []
+        for tr in active_tracks:
+            if int(tr.get("missed", 0)) > int(max_missed_frames):
+                _finalize_stable_track(tr)
+            else:
+                survivors.append(tr)
+        active_tracks = survivors
+
+        for obs_idx, obs in enumerate(frame_obs):
+            if obs_idx in matched_obs:
+                continue
+            active_tracks.append(_new_track(obs, next_track_id))
+            next_track_id += 1
+
+    for tr in active_tracks:
+        _finalize_stable_track(tr)
+
+    result: list[SceneTrack] = []
+    for tr in finished_tracks:
+        samples_obj = tr.get("samples", [])
+        if not isinstance(samples_obj, list):
+            continue
+        samples = [s for s in samples_obj if isinstance(s, SceneTrackSample)]
+        if len(samples) < int(min_samples):
+            continue
+        samples.sort(key=lambda s: int(s.frame_index))
+        result.append(SceneTrack(track_id=int(tr["track_id"]), label=str(tr["label"]), samples=samples))
+
+    # Reindex to keep contiguous IDs for downstream validation.
+    result.sort(key=lambda t: (-len(t.samples), t.label, t.track_id))
+    for i, tr in enumerate(result, start=1):
+        tr.track_id = i
+    return result
+
+
+
+def _track_aggregated_bbox(samples: list[SceneTrackSample]) -> tuple[int, int, int, int] | None:
+    boxes = [s.bbox_xyxy for s in samples if s.bbox_xyxy is not None]
+    if not boxes:
+        return None
+    x1 = min(int(b[0]) for b in boxes)
+    y1 = min(int(b[1]) for b in boxes)
+    x2 = max(int(b[2]) for b in boxes)
+    y2 = max(int(b[3]) for b in boxes)
+    return (x1, y1, x2, y2)
+
+
+def _track_average_score(samples: list[SceneTrackSample]) -> float | None:
+    vals = [float(s.score) for s in samples if s.score is not None and np.isfinite(float(s.score))]
+    if not vals:
+        return None
+    return float(np.mean(np.asarray(vals, dtype=np.float32)))
+
+
+def _objects_payload_from_tracks(tracks: list[SceneTrack], ground_y: float | None = None) -> list[dict]:
+    payload: list[dict] = []
+    for t in tracks:
+        pts = np.asarray([s.position_world for s in t.samples], dtype=np.float32)
+        if pts.size == 0:
+            center = np.zeros((3,), dtype=np.float32)
+        else:
+            center = np.median(pts, axis=0).astype(np.float32)
+
+        if ground_y is not None and np.isfinite(ground_y):
+            center[1] = float(ground_y)
+
+        distances = np.asarray([float(s.distance_m) for s in t.samples], dtype=np.float32)
+        distance_m = float(np.median(distances)) if distances.size > 0 else 0.0
+
+        best_sample = max(
+            t.samples,
+            key=lambda s: float(s.score) if s.score is not None else -1.0,
+        )
+        avg_score = _track_average_score(t.samples)
+        aggregated_bbox = _track_aggregated_bbox(t.samples)
+
+        payload.append(
+            {
+                "id": int(t.track_id),
+                "label": t.label,
+                "position_world": [float(center[0]), float(center[1]), float(center[2])],
+                "distance_m": float(distance_m),
+                "observations": int(len(t.samples)),
+                "representative_frame_index": int(best_sample.frame_index),
+                "representative_bbox_xyxy": list(best_sample.bbox_xyxy) if best_sample.bbox_xyxy is not None else None,
+                "representative_score": float(best_sample.score) if best_sample.score is not None else None,
+                "aggregated_bbox_xyxy": list(aggregated_bbox) if aggregated_bbox is not None else None,
+                "average_score": float(avg_score) if avg_score is not None else None,
+                "sprite_file": None,
+            }
+        )
+
+    return payload
+
+
+def write_objects_json(
+    path: str | Path,
+    objects: list[SceneObject],
+    tracks: list[SceneTrack] | None = None,
+    ground_y: float | None = None,
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # JSON must be derived from tracked entities only to keep CLI and artifact counts aligned.
+    _ = objects  # Retained for backward-compatible call sites.
+    track_source = list(tracks or [])
+    object_payload = _objects_payload_from_tracks(track_source, ground_y=ground_y)
+    track_payload = [
+        {
+            "id": int(t.track_id),
+            "label": t.label,
+            "average_score": _track_average_score(t.samples),
+            "aggregated_bbox_xyxy": list(_track_aggregated_bbox(t.samples)) if _track_aggregated_bbox(t.samples) is not None else None,
+            "samples": [
+                {
+                    "frame_index": int(s.frame_index),
+                    "position_world": [
+                        float(s.position_world[0]),
+                        float(s.position_world[1]),
+                        float(s.position_world[2]),
+                    ],
+                    "distance_m": float(s.distance_m),
+                    "score": float(s.score) if s.score is not None else None,
+                    "bbox_xyxy": list(s.bbox_xyxy) if s.bbox_xyxy is not None else None,
+                }
+                for s in t.samples
+            ],
+        }
+        for t in track_source
+    ]
+
+    if len(track_source) != len(object_payload):
+        raise ValueError(
+            f"Track/Object serialization mismatch: tracks={len(track_source)} objects={len(object_payload)}"
+        )
+
+    payload = {
+        "objects": object_payload,
+        "tracks": track_payload,
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def save_object_visual_assets(
+    frames_bgr: list[np.ndarray],
+    objects: list[SceneObject],
+    out_dir: str | Path,
+) -> None:
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    for obj in objects:
+        if obj.representative_frame_index is None or obj.representative_bbox_xyxy is None:
+            continue
+        fi = int(obj.representative_frame_index)
+        if fi < 0 or fi >= len(frames_bgr):
+            continue
+
+        frame = frames_bgr[fi]
+        x1, y1, x2, y2 = obj.representative_bbox_xyxy
+        h, w = frame.shape[:2]
+        x1 = max(0, min(w - 1, int(x1)))
+        x2 = max(0, min(w - 1, int(x2)))
+        y1 = max(0, min(h - 1, int(y1)))
+        y2 = max(0, min(h - 1, int(y2)))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        crop = frame[y1:y2, x1:x2].copy()
+        if crop.size == 0:
+            continue
+
+        rgba = _bbox_to_rgba(crop)
+        name = f"obj_{obj.object_id:03d}_{obj.label.replace(' ', '_')}.png"
+        out_file = out_path / name
+        cv2.imwrite(str(out_file), rgba)
+        obj.sprite_file = f"objects_assets/{name}"
+
+
+def _bbox_width_m(obs: ObjectObservation, depth_m: float) -> float:
+    x1, _, x2, _ = obs.bbox_xyxy
+    px_w = max(1, x2 - x1)
+    focal_px = 1200.0
+    return float(px_w * depth_m / focal_px)
+
+
+def _bbox_height_m(obs: ObjectObservation, depth_m: float) -> float:
+    _, y1, _, y2 = obs.bbox_xyxy
+    px_h = max(1, y2 - y1)
+    focal_px = 1200.0
+    return float(px_h * depth_m / focal_px)
+
+
+def _bbox_to_rgba(crop_bgr: np.ndarray) -> np.ndarray:
+    h, w = crop_bgr.shape[:2]
+    mask = np.zeros((h, w), np.uint8)
+    bgd = np.zeros((1, 65), np.float64)
+    fgd = np.zeros((1, 65), np.float64)
+
+    rect = (1, 1, max(1, w - 2), max(1, h - 2))
+    try:
+        cv2.grabCut(crop_bgr, mask, rect, bgd, fgd, 2, cv2.GC_INIT_WITH_RECT)
+        alpha = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+    except Exception:
+        alpha = np.full((h, w), 220, dtype=np.uint8)
+
+    rgba = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2BGRA)
+    rgba[:, :, 3] = alpha
+    return rgba

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "miniscene"
+version = "0.1.0"
+description = "Lightweight 3D scene reconstruction from monocular indoor video"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "opencv-python>=4.8",
+  "tqdm>=4.66",
+  "plotly>=5.20",
+  "ultralytics>=8.4.34; python_version < '3.13'"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

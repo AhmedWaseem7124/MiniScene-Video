@@ -1,0 +1,25 @@
+# Virtual environments
+.venv/
+.venv312/
+
+# Vendor files/folders
+_vendor/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# Node modules
+node_modules/
+
+outputs/
+
+# Large files and models
+*.pt
+*.mp4
+
+# Logs
+*.log
