@@ -203,6 +203,19 @@ def generate_room_analysis(session_id, session_dir):
 
 def generate_scene_graph(session_id, session_dir):
     objects = load_objects_json(session_dir)
+
+    def _object_position(obj):
+        pos = obj.get("position_world")
+        if not pos:
+            box = obj.get("box_3d") or {}
+            pos = box.get("center")
+        if not pos:
+            samples = obj.get("samples") or []
+            if samples:
+                pos = samples[0].get("position_world")
+        if pos and len(pos) == 3:
+            return pos
+        return [0, 0, 0]
     
     nodes = []
     edges = []
@@ -227,8 +240,8 @@ def generate_scene_graph(session_id, session_dir):
             id1 = str(obj1.get("id", f"obj_{i}"))
             id2 = str(obj2.get("id", f"obj_{j}"))
             
-            pos1 = obj1.get("samples", [{}])[0].get("position_world", [0,0,0])
-            pos2 = obj2.get("samples", [{}])[0].get("position_world", [0,0,0])
+            pos1 = _object_position(obj1)
+            pos2 = _object_position(obj2)
             
             if pos1 and pos2 and len(pos1) == 3 and len(pos2) == 3:
                 dist = np.linalg.norm(np.array(pos1) - np.array(pos2))

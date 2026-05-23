@@ -21,11 +21,12 @@ class ObjectObservation:
     bbox_xyxy: tuple[int, int, int, int]
     position_world: np.ndarray
     distance_m: float
+    placement_quality: str = "good"
 
 
 @dataclass
 class SceneObject:
-    object_id: int
+    object_id: int | str
     label: str
     position_world: np.ndarray
     distance_m: float
@@ -35,6 +36,7 @@ class SceneObject:
     representative_bbox_xyxy: tuple[int, int, int, int] | None = None
     representative_score: float | None = None
     sprite_file: str | None = None
+    placement_quality: str = "good"
 
 
 @dataclass
@@ -44,6 +46,7 @@ class SceneTrackSample:
     distance_m: float
     score: float | None = None
     bbox_xyxy: tuple[int, int, int, int] | None = None
+    placement_quality: str = "good"
 
 
 @dataclass
@@ -201,30 +204,126 @@ def _mask_depth_and_center(
     return max(0.01, float(depth)), int(valid.size), refined_bbox, (cx, cy)
 
 
+def verify_yolo_status(model_name: str = "yolov8n-seg.pt", detection_enabled: bool = True) -> tuple[bool, object | None]:
+    try:
+        import ultralytics
+        from ultralytics import YOLO
+        import torch
+        ultralytics_installed = True
+    except ImportError:
+        print("ultralytics installed? false")
+        print(f"YOLO model path/name: {model_name}")
+        print("model loaded successfully? false")
+        print("selected device: CPU")
+        print(f"detection enabled? {str(detection_enabled).lower()}")
+        print("YOLO unavailable. Install ultralytics or disable object extraction.")
+        return False, None
+
+    print("ultralytics installed? true")
+    print(f"YOLO model path/name: {model_name}")
+    
+    model = None
+    try:
+        model = YOLO(model_name)
+        model_loaded = True
+    except Exception:
+        if model_name == "yolov8n-seg.pt":
+            try:
+                model_name = "yolov8n.pt"
+                print(f"yolov8n-seg.pt load failed, retrying fallback: {model_name}")
+                model = YOLO(model_name)
+                model_loaded = True
+            except Exception:
+                model_loaded = False
+        else:
+            model_loaded = False
+            
+    if not model_loaded:
+        print("model loaded successfully? false")
+        print("selected device: CPU")
+        print(f"detection enabled? {str(detection_enabled).lower()}")
+        return False, None
+
+    print("model loaded successfully? true")
+    
+    device_str = "CPU"
+    try:
+        if hasattr(model, "device"):
+            device_str = "GPU" if "cuda" in str(model.device).lower() else "CPU"
+        elif torch.cuda.is_available():
+            device_str = "GPU"
+    except Exception:
+        pass
+    print(f"selected device: {device_str}")
+    print(f"detection enabled? {str(detection_enabled).lower()}")
+    return True, model
+
+
 def _load_yolo_detector(model_name: str = "yolov8n.pt") -> object:
     from ultralytics import YOLO
-
     return YOLO(model_name)
 
 
 COMMON_OBJECT_LABELS = {
-    "person",
     "chair",
     "couch",
-    "sofa",
+    "bed",
     "dining table",
+    "tv",
+    "laptop",
+    "potted plant",
+    "refrigerator",
+    "microwave",
+    "oven",
+    "sink",
+    "vase",
+    "book",
+    "clock",
+    "sofa",
     "table",
+    "person",
 }
 
 
 CLASS_SCORE_THRESHOLDS = {
-    # Keep common indoor classes more permissive by default.
-    "person": 0.20,
-    "chair": 0.20,
-    "couch": 0.20,
-    "sofa": 0.20,
-    "dining table": 0.20,
-    "table": 0.20,
+    "chair": 0.15,
+    "couch": 0.15,
+    "sofa": 0.15,
+    "bed": 0.15,
+    "dining table": 0.15,
+    "table": 0.15,
+    "tv": 0.15,
+    "laptop": 0.15,
+    "potted plant": 0.15,
+    "refrigerator": 0.15,
+    "microwave": 0.15,
+    "oven": 0.15,
+    "sink": 0.15,
+    "vase": 0.15,
+    "book": 0.15,
+    "clock": 0.15,
+    "person": 0.15,
+}
+
+
+DEFAULT_SIZES = {
+    "chair": (0.6, 0.6, 0.8),
+    "couch": (1.8, 0.9, 0.8),
+    "sofa": (1.8, 0.9, 0.8),
+    "bed": (2.0, 1.5, 0.6),
+    "dining table": (1.6, 0.9, 0.75),
+    "table": (1.2, 0.8, 0.5),
+    "tv": (1.0, 0.2, 0.6),
+    "laptop": (0.4, 0.3, 0.25),
+    "potted plant": (0.5, 0.5, 0.8),
+    "refrigerator": (0.8, 0.8, 1.8),
+    "microwave": (0.5, 0.4, 0.3),
+    "oven": (0.6, 0.6, 0.85),
+    "sink": (0.6, 0.5, 0.4),
+    "vase": (0.3, 0.3, 0.5),
+    "book": (0.2, 0.25, 0.05),
+    "clock": (0.3, 0.1, 0.3),
+    "person": (0.6, 0.4, 1.7),
 }
 
 
@@ -273,7 +372,7 @@ def detect_objects_3d(
     if not frames_bgr:
         return []
 
-    observations = _detect_observations(
+    observations, _ = _detect_observations(
         frames_bgr=frames_bgr,
         depth_maps=depth_maps,
         poses_world_from_cam=poses_world_from_cam,
@@ -309,8 +408,12 @@ def detect_scene_entities_3d(
     dedup_enable: bool = True,
     dedup_merge_radius_m: float = 1.2,
     dedup_feature_similarity: float = 0.72,
-) -> tuple[list[SceneObject], list[SceneTrack]]:
-    observations = _detect_observations(
+    max_detect_keyframes: int = 0,
+    disable_tracking: bool = False,
+    out_dir: str | Path | None = None,
+) -> tuple[list[SceneObject], list[SceneTrack], dict]:
+    import time as pytime
+    observations, metadata = _detect_observations(
         frames_bgr=frames_bgr,
         depth_maps=depth_maps,
         poses_world_from_cam=poses_world_from_cam,
@@ -319,7 +422,11 @@ def detect_scene_entities_3d(
         iou_threshold=iou_threshold,
         max_per_frame=max_per_frame,
         label_allowlist=label_allowlist,
+        max_detect_keyframes=max_detect_keyframes,
+        disable_tracking=disable_tracking,
+        out_dir=out_dir,
     )
+    t_track_start = pytime.perf_counter()
     tracks = _build_tracks(observations, min_samples=min_track_samples)
     if dedup_enable:
         tracks = deduplicate_tracks_with_feature_matching(
@@ -336,7 +443,74 @@ def detect_scene_entities_3d(
         tracks = _prune_tracks_by_label_limit(tracks, max_instances_by_label)
         objects = _prune_objects_by_label_limit(objects, tracks, max_instances_by_label)
 
-    return objects, tracks
+    # Find untracked observations that were not successfully grouped into tracked objects
+    tracked_obs_keys = set()
+    for t in tracks:
+        for s in t.samples:
+            if s.bbox_xyxy is not None:
+                tracked_obs_keys.add((int(s.frame_index), tuple(int(v) for v in s.bbox_xyxy), str(t.label)))
+
+    untracked_observations = []
+    for obs in observations:
+        key = (int(obs.frame_index), tuple(int(v) for v in obs.bbox_xyxy), str(obs.label))
+        if key not in tracked_obs_keys:
+            untracked_observations.append(obs)
+
+    # Convert untracked observations to fallback objects with placement_quality: "estimated"
+    fallback_objects = []
+    for idx, obs in enumerate(untracked_observations, start=1):
+        lbl_lower = obs.label.strip().lower()
+        size = DEFAULT_SIZES.get(lbl_lower, (0.5, 0.5, 0.5))
+        
+        fallback_obj = SceneObject(
+            object_id=f"estimated_{idx}",
+            label=obs.label,
+            position_world=obs.position_world.copy(),
+            distance_m=obs.distance_m,
+            observations=1,
+            size_m=size,
+            representative_frame_index=int(obs.frame_index),
+            representative_bbox_xyxy=obs.bbox_xyxy,
+            representative_score=float(obs.score),
+            placement_quality="estimated",
+        )
+        fallback_objects.append(fallback_obj)
+
+    # Merge nearby fallback objects of the same label
+    merged_fallbacks = []
+    for f_obj in fallback_objects:
+        match_idx = -1
+        best_d = 1.0  # merge radius
+        for idx, m in enumerate(merged_fallbacks):
+            if m.label != f_obj.label:
+                continue
+            d = float(np.linalg.norm(f_obj.position_world - m.position_world))
+            if d < best_d:
+                best_d = d
+                match_idx = idx
+        if match_idx == -1:
+            merged_fallbacks.append(f_obj)
+        else:
+            m = merged_fallbacks[match_idx]
+            w_old = m.observations
+            w_new = f_obj.observations
+            m.position_world = ((m.position_world * w_old) + (f_obj.position_world * w_new)) / float(w_old + w_new)
+            m.distance_m = float((m.distance_m * w_old + f_obj.distance_m * w_new) / float(w_old + w_new))
+            m.observations += w_new
+            if f_obj.representative_score > m.representative_score:
+                m.representative_score = f_obj.representative_score
+                m.representative_frame_index = f_obj.representative_frame_index
+                m.representative_bbox_xyxy = f_obj.representative_bbox_xyxy
+
+    # Reindex fallback IDs
+    for i, m in enumerate(merged_fallbacks, start=1):
+        m.object_id = f"estimated_{i}"
+
+    combined_objects = objects + merged_fallbacks
+    metadata["final_objects_count"] = len(combined_objects)
+    metadata["object_tracking_time"] += pytime.perf_counter() - t_track_start
+
+    return combined_objects, tracks, metadata
 
 
 def deduplicate_tracks_with_feature_matching(
@@ -543,6 +717,18 @@ def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) 
     if not tracks:
         return []
 
+    def _sample_width_m(bbox: tuple[int, int, int, int], depth_m: float) -> float:
+        x1, _, x2, _ = bbox
+        px_w = max(1, x2 - x1)
+        focal_px = 1200.0
+        return float(px_w * depth_m / focal_px)
+
+    def _sample_height_m(bbox: tuple[int, int, int, int], depth_m: float) -> float:
+        _, y1, _, y2 = bbox
+        px_h = max(1, y2 - y1)
+        focal_px = 1200.0
+        return float(px_h * depth_m / focal_px)
+
     # Start with one object candidate per stable track.
     candidates: list[SceneObject] = []
     next_id = 1
@@ -553,6 +739,23 @@ def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) 
         center = np.median(pts, axis=0)
         d_median = float(np.median(np.asarray([s.distance_m for s in tr.samples], dtype=np.float32)))
 
+        widths_m = []
+        heights_m = []
+        for s in tr.samples:
+            if s.bbox_xyxy is not None:
+                widths_m.append(_sample_width_m(s.bbox_xyxy, s.distance_m))
+                heights_m.append(_sample_height_m(s.bbox_xyxy, s.distance_m))
+
+        if widths_m and heights_m:
+            w_m = float(np.median(widths_m))
+            h_m = float(np.median(heights_m))
+            d_m = max(0.08, min(w_m, h_m) * 0.8)
+            size_m = (w_m, h_m, d_m)
+        else:
+            size_m = DEFAULT_SIZES.get(tr.label.strip().lower(), (0.5, 0.5, 0.5))
+
+        p_q = "estimated" if any(getattr(s, "placement_quality", "good") == "estimated" for s in tr.samples) else "good"
+
         best_sample = max(tr.samples, key=lambda s: float(s.score or 0.0))
         candidates.append(
             SceneObject(
@@ -561,9 +764,11 @@ def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) 
                 position_world=center.astype(np.float32),
                 distance_m=d_median,
                 observations=len(tr.samples),
+                size_m=size_m,
                 representative_frame_index=int(best_sample.frame_index),
                 representative_bbox_xyxy=best_sample.bbox_xyxy,
                 representative_score=float(best_sample.score) if best_sample.score is not None else None,
+                placement_quality=p_q,
             )
         )
         next_id += 1
@@ -591,6 +796,10 @@ def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) 
         m.position_world = ((m.position_world * w_old) + (obj.position_world * w_new)) / float(w_old + w_new)
         m.distance_m = float((m.distance_m * w_old + obj.distance_m * w_new) / float(w_old + w_new))
         m.observations = int(w_old + w_new)
+        if obj.placement_quality == "estimated" or m.placement_quality == "estimated":
+            m.placement_quality = "estimated"
+        if w_new > w_old:
+            m.size_m = obj.size_m
         if (obj.representative_score or 0.0) > (m.representative_score or 0.0):
             m.representative_score = obj.representative_score
             m.representative_frame_index = obj.representative_frame_index
@@ -684,49 +893,98 @@ def _detect_observations(
     iou_threshold: float,
     max_per_frame: int,
     label_allowlist: set[str] | None,
-) -> list[ObjectObservation]:
-    if not frames_bgr:
-        return []
+    max_detect_keyframes: int = 0,
+    disable_tracking: bool = False,
+    out_dir: str | Path | None = None,
+) -> tuple[list[ObjectObservation], dict]:
+    metadata = {
+        "yolo_loaded": False,
+        "frames_scanned": 0,
+        "raw_detections_count": 0,
+        "final_objects_count": 0,
+        "rejection_reasons": {
+            "low_confidence": 0,
+            "unallowed_class": 0
+        },
+        "object_detection_time": 0.0,
+        "object_tracking_time": 0.0
+    }
 
-    try:
-        try:
-            model = _load_yolo_detector("yolov8n-seg.pt")
-        except Exception:
-            model = _load_yolo_detector("yolov8n.pt")
-    except Exception:
-        return []
+    if not frames_bgr:
+        return [], metadata
+
+    success, model = verify_yolo_status("yolov8n-seg.pt", detection_enabled=True)
+    if not success or model is None:
+        return [], metadata
+
+    metadata["yolo_loaded"] = True
+
+    L = len(frames_bgr)
+    if 0 < max_detect_keyframes < L:
+        if max_detect_keyframes == 1:
+            keyframes_set = {L // 2}
+        else:
+            keyframes_set = {int(round(i * (L - 1) / (max_detect_keyframes - 1))) for i in range(max_detect_keyframes)}
+    else:
+        keyframes_set = set(range(L))
 
     observations: list[ObjectObservation] = []
     common_kept_total = 0
+    raw_detections_data = {"frames": []}
 
+    current_keyframe_idx = 0
+    total_keyframes = len(keyframes_set)
     for frame_idx, (frame_bgr, depth_map, pose) in enumerate(zip(frames_bgr, depth_maps, poses_world_from_cam)):
+        if frame_idx not in keyframes_set:
+            continue
+        
+        current_keyframe_idx += 1
+        print(f"Running YOLO keyframe {current_keyframe_idx}/{total_keyframes}")
+        metadata["frames_scanned"] += 1
         used_conf = float(score_threshold)
         kept = 0
         frame_candidates: list[ObjectObservation] = []
         conf_schedule = _adaptive_conf_schedule(float(score_threshold))
 
+        got_detections = False
+        frame_detections = []
+
         for conf_try in conf_schedule:
             used_conf = float(conf_try)
+            import time as pytime
+            t_det_start = pytime.perf_counter()
             try:
-                results = model.track(
-                    source=frame_bgr,
-                    persist=True,
-                    verbose=False,
-                    conf=used_conf,
-                    iou=float(iou_threshold),
-                    tracker="bytetrack.yaml",
-                )
+                if disable_tracking:
+                    results = model.predict(
+                        source=frame_bgr,
+                        verbose=False,
+                        conf=used_conf,
+                        iou=float(iou_threshold),
+                    )
+                else:
+                    results = model.track(
+                        source=frame_bgr,
+                        persist=True,
+                        verbose=False,
+                        conf=used_conf,
+                        iou=float(iou_threshold),
+                        tracker="bytetrack.yaml",
+                    )
             except Exception:
                 results = None
+
+            det_elapsed = pytime.perf_counter() - t_det_start
+            metadata["object_detection_time"] += det_elapsed
 
             if not results:
                 continue
 
             r0 = results[0]
             boxes = getattr(r0, "boxes", None)
-            if boxes is None:
+            if boxes is None or len(boxes) == 0:
                 continue
 
+            got_detections = True
             masks_obj = getattr(r0, "masks", None)
             masks_data = None
             if masks_obj is not None and getattr(masks_obj, "data", None) is not None:
@@ -738,6 +996,18 @@ def _detect_observations(
             ids = boxes.id.detach().cpu().numpy().astype(np.int32) if getattr(boxes, "id", None) is not None else np.full((len(xyxy),), -1, dtype=np.int32)
             names = getattr(r0, "names", {}) or {}
 
+            frame_detections = []
+            for box, score, label_id in zip(xyxy, confs, clss):
+                x1, y1, x2, y2 = [int(v) for v in box]
+                label = str(names.get(int(label_id), f"obj_{int(label_id)}"))
+                frame_detections.append({
+                    "label": label,
+                    "confidence": float(score),
+                    "bbox_2d": [x1, y1, x2, y2]
+                })
+
+            metadata["raw_detections_count"] += len(frame_detections)
+
             frame_candidates = []
             for det_idx, (box, score, label_id, yolo_track_id) in enumerate(zip(xyxy, confs, clss, ids)):
                 x1, y1, x2, y2 = [int(v) for v in box]
@@ -746,13 +1016,17 @@ def _detect_observations(
                 mask = masks_data[det_idx] if masks_data is not None and det_idx < len(masks_data) else None
 
                 if label_allowlist and label not in label_allowlist:
+                    metadata["rejection_reasons"]["unallowed_class"] += 1
                     continue
                 if float(score) < _label_threshold(label, float(score_threshold)):
+                    metadata["rejection_reasons"]["low_confidence"] += 1
                     continue
 
                 d, valid_count, refined_bbox, center_xy = _mask_depth_and_center(depth_map, (x1, y1, x2, y2), mask)
+                placement_quality = "good"
                 if d <= 0.0 or not np.isfinite(d):
-                    continue
+                    d = 1.5
+                    placement_quality = "estimated"
 
                 u, v = center_xy
                 p_cam = pixel_to_camera_point(u, v, float(d), intrinsics)
@@ -770,6 +1044,7 @@ def _detect_observations(
                         bbox_xyxy=refined_bbox,
                         position_world=p_world.astype(np.float32),
                         distance_m=dist,
+                        placement_quality=placement_quality,
                     )
                 )
                 if label_key in COMMON_OBJECT_LABELS:
@@ -788,21 +1063,30 @@ def _detect_observations(
             rescue_conf = max(0.12, min(conf_schedule[-1], float(score_threshold) * 0.40))
             used_conf = float(rescue_conf)
             try:
-                results = model.track(
-                    source=frame_bgr,
-                    persist=True,
-                    verbose=False,
-                    conf=used_conf,
-                    iou=float(iou_threshold),
-                    tracker="bytetrack.yaml",
-                )
+                if disable_tracking:
+                    results = model.predict(
+                        source=frame_bgr,
+                        verbose=False,
+                        conf=used_conf,
+                        iou=float(iou_threshold),
+                    )
+                else:
+                    results = model.track(
+                        source=frame_bgr,
+                        persist=True,
+                        verbose=False,
+                        conf=used_conf,
+                        iou=float(iou_threshold),
+                        tracker="bytetrack.yaml",
+                    )
             except Exception:
                 results = None
 
             if results:
                 r0 = results[0]
                 boxes = getattr(r0, "boxes", None)
-                if boxes is not None:
+                if boxes is not None and len(boxes) > 0:
+                    got_detections = True
                     masks_obj = getattr(r0, "masks", None)
                     masks_data = None
                     if masks_obj is not None and getattr(masks_obj, "data", None) is not None:
@@ -814,6 +1098,18 @@ def _detect_observations(
                     ids = boxes.id.detach().cpu().numpy().astype(np.int32) if getattr(boxes, "id", None) is not None else np.full((len(xyxy),), -1, dtype=np.int32)
                     names = getattr(r0, "names", {}) or {}
 
+                    frame_detections = []
+                    for box, score, label_id in zip(xyxy, confs, clss):
+                        x1, y1, x2, y2 = [int(v) for v in box]
+                        label = str(names.get(int(label_id), f"obj_{int(label_id)}"))
+                        frame_detections.append({
+                            "label": label,
+                            "confidence": float(score),
+                            "bbox_2d": [x1, y1, x2, y2]
+                        })
+
+                    metadata["raw_detections_count"] += len(frame_detections)
+
                     for det_idx, (box, score, label_id, yolo_track_id) in enumerate(zip(xyxy, confs, clss, ids)):
                         x1, y1, x2, y2 = [int(v) for v in box]
                         label = str(names.get(int(label_id), f"obj_{int(label_id)}"))
@@ -823,13 +1119,17 @@ def _detect_observations(
                         if label_key not in COMMON_OBJECT_LABELS:
                             continue
                         if label_allowlist and label not in label_allowlist:
+                            metadata["rejection_reasons"]["unallowed_class"] += 1
                             continue
                         if float(score) < rescue_conf:
+                            metadata["rejection_reasons"]["low_confidence"] += 1
                             continue
 
                         d, valid_count, refined_bbox, center_xy = _mask_depth_and_center(depth_map, (x1, y1, x2, y2), mask)
+                        placement_quality = "good"
                         if d <= 0.0 or not np.isfinite(d):
-                            continue
+                            d = 1.5
+                            placement_quality = "estimated"
 
                         u, v = center_xy
                         p_cam = pixel_to_camera_point(u, v, float(d), intrinsics)
@@ -847,6 +1147,7 @@ def _detect_observations(
                                 bbox_xyxy=refined_bbox,
                                 position_world=p_world.astype(np.float32),
                                 distance_m=dist,
+                                placement_quality=placement_quality,
                             )
                         )
                         common_kept_total += 1
@@ -860,10 +1161,40 @@ def _detect_observations(
 
         print(f"[objects] frame={frame_idx} final_conf={used_conf:.2f} kept={kept}")
 
+        # Save debug images if out_dir is provided
+        if out_dir is not None:
+            debug_dir = Path(out_dir) / "debug_detection_frames"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            orig_path = debug_dir / f"frame_{frame_idx:03d}.jpg"
+            cv2.imwrite(str(orig_path), frame_bgr)
+
+            drawn_frame = frame_bgr.copy()
+            for det in frame_detections:
+                x1, y1, x2, y2 = det["bbox_2d"]
+                lbl = det["label"]
+                conf = det["confidence"]
+                cv2.rectangle(drawn_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(drawn_frame, f"{lbl} {conf:.2f}", (x1, max(15, y1 - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            det_path = debug_dir / f"frame_{frame_idx:03d}_detections.jpg"
+            cv2.imwrite(str(det_path), drawn_frame)
+
+        raw_detections_data["frames"].append({
+            "frame": f"frame_{frame_idx:03d}.jpg",
+            "detections": frame_detections
+        })
+
     if observations and common_kept_total == 0:
         print("[objects] warning: no common-object detections kept (person/chair/sofa/table)")
 
-    return observations
+    if out_dir is not None:
+        raw_json_path = Path(out_dir) / "raw_detections.json"
+        try:
+            raw_json_path.write_text(json.dumps(raw_detections_data, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[objects] failed to write raw_detections.json: {e}")
+
+    return observations, metadata
 
 
 def _cluster_observations(observations: list[ObjectObservation], merge_radius_m: float = 0.9) -> list[SceneObject]:
@@ -1163,14 +1494,38 @@ def write_objects_json(
     objects: list[SceneObject],
     tracks: list[SceneTrack] | None = None,
     ground_y: float | None = None,
+    metadata: dict | None = None,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # JSON must be derived from tracked entities only to keep CLI and artifact counts aligned.
-    _ = objects  # Retained for backward-compatible call sites.
     track_source = list(tracks or [])
-    object_payload = _objects_payload_from_tracks(track_source, ground_y=ground_y)
+    
+    # Serialize objects list directly
+    object_payload = []
+    for obj in objects:
+        pos = [float(obj.position_world[0]), float(obj.position_world[1]), float(obj.position_world[2])]
+        if ground_y is not None and np.isfinite(ground_y):
+            pos[1] = float(ground_y)
+
+        size = list(obj.size_m) if obj.size_m is not None else None
+
+        object_payload.append({
+            "id": obj.object_id,
+            "label": obj.label,
+            "position_world": pos,
+            "distance_m": float(obj.distance_m),
+            "observations": int(obj.observations),
+            "representative_frame_index": int(obj.representative_frame_index) if obj.representative_frame_index is not None else None,
+            "representative_bbox_xyxy": list(obj.representative_bbox_xyxy) if obj.representative_bbox_xyxy is not None else None,
+            "representative_score": float(obj.representative_score) if obj.representative_score is not None else None,
+            "sprite_file": obj.sprite_file,
+            "placement_quality": obj.placement_quality,
+            "source_frame": f"frame_{obj.representative_frame_index:03d}.jpg" if obj.representative_frame_index is not None else None,
+            "size_m": size,
+            "size": size,
+        })
+
     track_payload = [
         {
             "id": int(t.track_id),
@@ -1195,15 +1550,23 @@ def write_objects_json(
         for t in track_source
     ]
 
-    if len(track_source) != len(object_payload):
-        raise ValueError(
-            f"Track/Object serialization mismatch: tracks={len(track_source)} objects={len(object_payload)}"
-        )
-
     payload = {
         "objects": object_payload,
         "tracks": track_payload,
     }
+    if metadata is not None:
+        payload["metadata"] = metadata
+    else:
+        payload["metadata"] = {
+            "yolo_loaded": True,
+            "frames_scanned": 0,
+            "raw_detections_count": len(object_payload),
+            "final_objects_count": len(object_payload),
+            "rejection_reasons": {
+                "low_confidence": 0,
+                "unallowed_class": 0
+            }
+        }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 

@@ -14,128 +14,87 @@ import WalkableOverlay from './WalkableOverlay';
 import CVOverlay from './CVOverlay';
 import { processPointCloud } from './RepairEngine';
 
+// ─── Error Boundary ────────────────────────────────────────────────────────
+
 class ErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-
+  constructor(props) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
   render() {
-    if (this.state.hasError) {
-      return (
-        <group>
-          <mesh>
-            <boxGeometry args={[1, 1, 1]} />
-            <meshBasicMaterial color="red" wireframe />
-          </mesh>
-        </group>
-      );
-    }
+    if (this.state.hasError) return (
+      <group>
+        <mesh><boxGeometry args={[1, 1, 1]} /><meshBasicMaterial color="red" wireframe /></mesh>
+      </group>
+    );
     return this.props.children;
   }
 }
 
-// Point cloud loader
+// ─── Point Cloud ───────────────────────────────────────────────────────────
+
 function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpdate, pointCloudUrl, onLoad }) {
   const [geometry, setGeometry] = useState(null);
-  const [status, setStatus] = useState("Loading point cloud...");
+  const [status, setStatus] = useState('Loading point cloud...');
 
   useEffect(() => {
+    if (!pointCloudUrl) {
+      setStatus('Waiting for point cloud data...');
+      return;
+    }
     let active = true;
-    const url = pointCloudUrl || '/point_cloud.ply';
-    setStatus("Loading point cloud...");
+    setStatus('Loading point cloud...');
     setGeometry(null);
 
-    fetch(url)
-      .then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.arrayBuffer();
-      })
+    fetch(pointCloudUrl)
+      .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.arrayBuffer(); })
       .then(buffer => {
         if (!active) return;
-        setStatus("Parsing point cloud...");
+        setStatus('Parsing point cloud...');
         try {
           const loader = new PLYLoader();
-          const parsedPly = loader.parse(buffer);
-          if (!parsedPly.attributes.position || parsedPly.attributes.position.count === 0) {
-            throw new Error("0 vertices in PLYLoader");
-          }
-          setGeometry(parsedPly);
-          setStatus(`Loaded point cloud: ${parsedPly.attributes.position.count} vertices`);
-        } catch (err) {
-          console.warn("PLYLoader failed, trying manual fallback...", err);
-          setStatus("PLYLoader failed, using manual fallback...");
-          // Manual ASCII fallback
+          const parsed = loader.parse(buffer);
+          if (!parsed.attributes.position || parsed.attributes.position.count === 0) throw new Error('0 vertices');
+          setGeometry(parsed);
+          setStatus(`Loaded: ${parsed.attributes.position.count} vertices`);
+        } catch {
+          // ASCII fallback
           const text = new TextDecoder().decode(buffer);
           const lines = text.split('\n');
           let vertexCount = 0;
-          let headerEnded = false;
-          
-          for (let line of lines) {
-            line = line.trim();
-            if (line.startsWith('element vertex')) {
-              vertexCount = parseInt(line.split(' ')[2]);
-            }
-            if (line === 'end_header') {
-              headerEnded = true;
-              break;
-            }
+          for (const line of lines) {
+            if (line.trim().startsWith('element vertex')) vertexCount = parseInt(line.trim().split(' ')[2]);
+            if (line.trim() === 'end_header') break;
           }
-          
-          if (vertexCount === 0) throw new Error("Point cloud is empty (0 vertices).");
-          
+          if (vertexCount === 0) throw new Error('Empty point cloud');
           const positions = new Float32Array(vertexCount * 3);
           const colors = new Float32Array(vertexCount * 3);
-          let hasColors = false;
-          
-          let i = 0;
-          let inData = false;
-          for (let line of lines) {
-            line = line.trim();
-            if (!inData) {
-              if (line === 'end_header') inData = true;
-              continue;
-            }
+          let hasColors = false, i = 0, inData = false;
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!inData) { if (line === 'end_header') inData = true; continue; }
             if (!line) continue;
-            
-            const parts = line.split(/\s+/);
-            if (parts.length >= 3 && i < vertexCount) {
-              positions[i*3] = parseFloat(parts[0]);
-              positions[i*3+1] = parseFloat(parts[1]);
-              positions[i*3+2] = parseFloat(parts[2]);
-              if (parts.length >= 6) {
-                hasColors = true;
-                colors[i*3] = parseFloat(parts[3]) / 255;
-                colors[i*3+1] = parseFloat(parts[4]) / 255;
-                colors[i*3+2] = parseFloat(parts[5]) / 255;
-              }
+            const p = line.split(/\s+/);
+            if (p.length >= 3 && i < vertexCount) {
+              positions[i * 3] = parseFloat(p[0]);
+              positions[i * 3 + 1] = parseFloat(p[1]);
+              positions[i * 3 + 2] = parseFloat(p[2]);
+              if (p.length >= 6) { hasColors = true; colors[i*3]=parseFloat(p[3])/255; colors[i*3+1]=parseFloat(p[4])/255; colors[i*3+2]=parseFloat(p[5])/255; }
               i++;
             }
           }
-          
           const geom = new THREE.BufferGeometry();
           geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-          if (hasColors) {
-            geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-          }
+          if (hasColors) geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
           setGeometry(geom);
-          setStatus(`Loaded point cloud (fallback): ${vertexCount} vertices`);
+          setStatus(`Loaded (fallback): ${vertexCount} vertices`);
         }
       })
-      .catch(err => {
-        if (active) setStatus(`Error: ${err.message}`);
-      });
-      
+      .catch(err => { if (active) setStatus(`Error: ${err.message}`); });
+
     return () => { active = false; };
   }, [pointCloudUrl]);
 
   const { processedGeom, analytics } = useMemo(() => {
     if (!geometry) return { processedGeom: null, analytics: null };
-    setStatus("Rendering point cloud...");
     return processPointCloud(geometry, removedObjects, repairMode, settings);
   }, [geometry, removedObjects, repairMode, settings]);
 
@@ -144,184 +103,282 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
   }, [analytics, onRepairAnalyticsUpdate]);
 
   useEffect(() => {
-    if (processedGeom) {
-      processedGeom.computeBoundingBox();
-      const bbox = processedGeom.boundingBox;
-      const count = processedGeom.attributes.position.count;
-      console.log(`[Validation] Point Cloud Vertex Count: ${count}`);
-      
-      if (count > 0) {
-        const center = new THREE.Vector3();
-        bbox.getCenter(center);
-        const size = new THREE.Vector3();
-        bbox.getSize(size);
-        
-        if (onLoad) {
-          onLoad({ center, size, count, min: bbox.min, max: bbox.max });
-        }
-        setStatus("Point cloud render complete");
-      }
+    if (!processedGeom) return;
+    processedGeom.computeBoundingBox();
+    const bbox = processedGeom.boundingBox;
+    const count = processedGeom.attributes.position.count;
+    if (count > 0 && onLoad) {
+      const center = new THREE.Vector3();
+      const size = new THREE.Vector3();
+      bbox.getCenter(center);
+      bbox.getSize(size);
+      onLoad({ center, size, count, min: bbox.min, max: bbox.max });
     }
   }, [processedGeom, onLoad]);
 
   const material = useMemo(() => {
-    const hasColors = processedGeom && processedGeom.hasAttribute('color');
+    const hasColors = processedGeom?.hasAttribute('color');
     return new THREE.PointsMaterial({
-      size: 0.05,
+      size: settings.pointSize || 0.05,
       vertexColors: hasColors,
-      color: hasColors ? 0xffffff : 0x00ffff, // bright cyan fallback
+      color: hasColors ? 0xffffff : 0x00ddff,
       sizeAttenuation: true,
       transparent: true,
-      opacity: settings.pointOpacity
+      opacity: settings.pointOpacity,
     });
-  }, [settings.pointOpacity, processedGeom]);
+  }, [settings.pointOpacity, settings.pointSize, processedGeom]);
 
   if (settings.viewMode === 'room' || settings.viewMode === 'semantic') return null;
 
   return (
     <group>
-      <Html position={[0, 0, 0]} center>
-        <div style={{ color: 'white', background: 'rgba(0,0,0,0.8)', padding: '6px 12px', borderRadius: 4, whiteSpace: 'nowrap', display: status === "Point cloud render complete" ? 'none' : 'block', border: status.startsWith("Error") ? '1px solid red' : '1px solid #4ade80' }}>
-          {status}
-        </div>
-      </Html>
       {processedGeom && <points geometry={processedGeom} material={material} rotation={[-Math.PI, 0, 0]} />}
     </group>
   );
 }
 
-// Bounding box for raw detected objects
-function DetectedBoundingBox({ object, selected, onClick }) {
-  const { center, size } = object.box_3d;
-  const [hovered, setHovered] = useState(false);
-  useCursor(hovered);
+// ─── Label-matched placeholder models ─────────────────────────────────────
+// These are simple geometry placeholders rendered when a YOLO object is
+// detected but we do not have an explicit PlacedFurniture for it.
 
-  return (
-    <group position={[center[0], -center[1], -center[2]]}>
-      <mesh 
-        onClick={(e) => { e.stopPropagation(); onClick(object.id); }}
-        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); }}
-        onPointerOut={() => setHovered(false)}
-      >
-        <boxGeometry args={[size[0], size[1], size[2]]} />
-        <meshStandardMaterial 
-          color={selected ? '#6366f1' : hovered ? '#818cf8' : '#ffffff'} 
-          wireframe={!selected && !hovered}
-          transparent
-          opacity={selected || hovered ? 0.3 : 0.1}
-          depthWrite={false}
-        />
+const LABEL_TO_MODEL_TYPE = {
+  chair:         'Chair',
+  couch:         'Sofa',
+  sofa:          'Sofa',
+  'dining table':'Table',
+  table:         'Table',
+  bed:           'Bed',
+  plant:         'Plant',
+  tv:            'TVStand',
+  monitor:       'TVStand',
+};
+
+function DetectedPlaceholderModel({ label, size }) {
+  const modelType = LABEL_TO_MODEL_TYPE[label?.toLowerCase()];
+  if (!modelType) {
+    // Generic semi-transparent box for unknown labels
+    return (
+      <mesh>
+        <boxGeometry args={size || [0.8, 0.8, 0.8]} />
+        <meshStandardMaterial color="#6366f1" transparent opacity={0.18} wireframe={false} />
       </mesh>
-      <lineSegments>
-        <edgesGeometry args={[new THREE.BoxGeometry(size[0], size[1], size[2])]} />
-        <lineBasicMaterial color={selected ? '#4f46e5' : '#ffffff'} linewidth={2} />
-      </lineSegments>
+    );
+  }
+  // Render model at a small scale so it fits within the box bounds
+  const s = size || [1, 1, 1];
+  const scaleFactor = Math.min(s[0], s[1], s[2]) * 0.9;
+  return (
+    <group scale={[scaleFactor, scaleFactor, scaleFactor]}>
+      {renderModel(modelType)}
     </group>
   );
 }
 
-// Custom Walk Controls using PointerLock and WASD
+// ─── Detected Bounding Box ─────────────────────────────────────────────────
+
+function DetectedBoundingBox({ object, selected, onClick }) {
+  const [x, y, z] = object.box_3d.center;
+  const [w, h, d] = object.box_3d.size;
+  const [hovered, setHovered] = useState(false);
+  useCursor(hovered);
+
+  const label = object.label || 'object';
+  const conf  = typeof object.confidence === 'number' ? object.confidence : 0;
+  const confPct = Math.round(conf * 100);
+
+  // Flip Y because the point cloud is rendered with Y-flipped rotation
+  const pos = [x, -y, -z];
+  
+  const isEstimated = object.placement_quality === 'estimated';
+  const boxColor = selected 
+    ? '#6366f1' 
+    : hovered 
+      ? (isEstimated ? '#f43f5e' : '#818cf8') 
+      : (isEstimated ? '#fda4af' : '#06b6d4');
+
+  const lineRef = useRef();
+  useEffect(() => {
+    if (lineRef.current) {
+      lineRef.current.computeLineDistances();
+    }
+  }, [w, h, d]);
+
+  return (
+    <group position={pos}>
+      {/* Placeholder model */}
+      <group position={[0, h / 2, 0]}>
+        <DetectedPlaceholderModel label={label} size={[w, h, d]} />
+      </group>
+
+      {/* Semi-transparent bounding box */}
+      <mesh
+        onClick={e => { e.stopPropagation(); onClick(object.id); }}
+        onPointerOver={e => { e.stopPropagation(); setHovered(true); }}
+        onPointerOut={() => setHovered(false)}
+        position={[0, h / 2, 0]}
+      >
+        <boxGeometry args={[w, h, d]} />
+        <meshStandardMaterial
+          color={boxColor}
+          transparent
+          opacity={isEstimated ? (selected ? 0.12 : hovered ? 0.08 : 0.03) : (selected ? 0.18 : hovered ? 0.14 : 0.06)}
+          depthWrite={false}
+        />
+      </mesh>
+
+      {/* Box wireframe edges */}
+      {isEstimated ? (
+        <lineSegments position={[0, h / 2, 0]} ref={lineRef}>
+          <edgesGeometry args={[new THREE.BoxGeometry(w, h, d)]} />
+          <lineDashedMaterial 
+            color={boxColor} 
+            transparent 
+            opacity={selected ? 0.8 : 0.35} 
+            dashSize={0.08}
+            gapSize={0.05}
+          />
+        </lineSegments>
+      ) : (
+        <lineSegments position={[0, h / 2, 0]}>
+          <edgesGeometry args={[new THREE.BoxGeometry(w, h, d)]} />
+          <lineBasicMaterial color={boxColor} transparent opacity={selected ? 0.9 : 0.55} />
+        </lineSegments>
+      )}
+
+      {/* Floating HTML label */}
+      <Html
+        position={[0, h + 0.25, 0]}
+        center
+        distanceFactor={8}
+        style={{ pointerEvents: 'none', userSelect: 'none' }}
+      >
+        <div style={{
+          background: selected 
+            ? 'rgba(99,102,241,0.92)' 
+            : (isEstimated ? 'rgba(244,63,94,0.85)' : 'rgba(6,182,212,0.88)'),
+          color: 'white',
+          padding: '3px 8px',
+          borderRadius: 6,
+          fontSize: 11,
+          fontFamily: "'Outfit', sans-serif",
+          fontWeight: 700,
+          whiteSpace: 'nowrap',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+          border: `1px solid ${selected 
+            ? 'rgba(165,180,252,0.5)' 
+            : (isEstimated ? 'rgba(251,113,133,0.4)' : 'rgba(103,232,249,0.4)')}`,
+        }}>
+          {label}
+          {isEstimated ? (
+            <span style={{ marginLeft: 5, background: 'rgba(0,0,0,0.25)', padding: '2px 5px', borderRadius: 4, fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Estimated
+            </span>
+          ) : (
+            confPct > 0 && (
+              <span style={{ marginLeft: 5, fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
+                {confPct}%
+              </span>
+            )
+          )}
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+// ─── Walk Controls ─────────────────────────────────────────────────────────
+
 function WalkControls() {
   const { camera } = useThree();
-  const [keys, setKeys] = useState({ w: false, a: false, s: false, d: false, q: false, e: false });
-  const speed = 0.05;
+  const keys = useRef({ w: false, a: false, s: false, d: false, q: false, e: false });
+  const speed = 0.06;
 
   useEffect(() => {
-    const handleKeyDown = (e) => setKeys(k => ({ ...k, [e.key.toLowerCase()]: true }));
-    const handleKeyUp = (e) => setKeys(k => ({ ...k, [e.key.toLowerCase()]: false }));
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
+    const dn = e => { keys.current[e.key.toLowerCase()] = true; };
+    const up = e => { keys.current[e.key.toLowerCase()] = false; };
+    window.addEventListener('keydown', dn);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', dn); window.removeEventListener('keyup', up); };
   }, []);
 
   useFrame(() => {
-    const dir = new THREE.Vector3();
-    const right = new THREE.Vector3();
-    
-    camera.getWorldDirection(dir);
-    dir.y = 0; // Keep movement on horizontal plane
-    dir.normalize();
+    const dir = new THREE.Vector3(); const right = new THREE.Vector3();
+    camera.getWorldDirection(dir); dir.y = 0; dir.normalize();
     right.crossVectors(camera.up, dir).normalize();
-
-    if (keys.w) camera.position.addScaledVector(dir, speed);
-    if (keys.s) camera.position.addScaledVector(dir, -speed);
-    if (keys.a) camera.position.addScaledVector(right, speed);
-    if (keys.d) camera.position.addScaledVector(right, -speed);
-    if (keys.q) camera.position.y += speed;
-    if (keys.e) camera.position.y -= speed;
+    if (keys.current.w) camera.position.addScaledVector(dir, speed);
+    if (keys.current.s) camera.position.addScaledVector(dir, -speed);
+    if (keys.current.a) camera.position.addScaledVector(right, speed);
+    if (keys.current.d) camera.position.addScaledVector(right, -speed);
+    if (keys.current.q) camera.position.y += speed;
+    if (keys.current.e) camera.position.y -= speed;
   });
 
   return <PointerLockControls makeDefault />;
 }
 
-// Render Placed Furniture
-function PlacedFurniture({ item, selected, onSelect, onUpdate }) {
-  const groupRef = useRef();
-  
+// ─── Placed Furniture — fixed TransformControls ────────────────────────────
+
+function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode }) {
+  const outerGroupRef = useRef();
+  const innerGroupRef = useRef();
+  const [ready, setReady] = useState(false);
+
+  // Delay one tick so innerGroupRef is mounted before TransformControls tries to attach
   useEffect(() => {
-    if (groupRef.current) {
-      groupRef.current.traverse((child) => {
-        if (child.isMesh) {
-          child.castShadow = true;
-          child.receiveShadow = true;
-        }
-      });
+    if (selected && innerGroupRef.current) {
+      const timer = setTimeout(() => setReady(true), 0);
+      return () => clearTimeout(timer);
+    } else {
+      setReady(false);
     }
-  }, [item.type]);
+  }, [selected]);
 
-  const handleTransformChange = () => {
-    if (groupRef.current) {
-      onUpdate(item.id, {
-        position: [groupRef.current.position.x, groupRef.current.position.y, groupRef.current.position.z],
-        rotation: [groupRef.current.rotation.x, groupRef.current.rotation.y, groupRef.current.rotation.z],
-        scale: [groupRef.current.scale.x, groupRef.current.scale.y, groupRef.current.scale.z]
-      });
-    }
-  };
+  const handleChange = useCallback(() => {
+    const g = innerGroupRef.current;
+    if (!g) return;
+    onUpdate(item.id, {
+      position: [g.position.x, g.position.y, g.position.z],
+      rotation: [g.rotation.x, g.rotation.y, g.rotation.z],
+      scale: [g.scale.x, g.scale.y, g.scale.z],
+    });
+  }, [item.id, onUpdate]);
 
-  const meshContent = (
-    <group 
-      ref={groupRef}
-      position={item.position || [0,0,0]} 
-      rotation={item.rotation || [0,0,0]}
-      scale={item.scale || [1,1,1]}
-      onClick={(e) => { e.stopPropagation(); onSelect(item.id); }}
+  const innerMesh = (
+    <group
+      ref={innerGroupRef}
+      position={item.position || [0, 0, 0]}
+      rotation={item.rotation || [0, 0, 0]}
+      scale={item.scale || [1, 1, 1]}
+      onClick={e => { e.stopPropagation(); onSelect(item.id); }}
     >
       {renderModel(item.type)}
     </group>
   );
 
-  if (selected) {
+  if (selected && ready && innerGroupRef.current) {
     return (
-      <TransformControls 
-        mode="translate" 
-        onMouseUp={handleTransformChange}
-        object={groupRef.current}
-      >
-        {meshContent}
-      </TransformControls>
+      <group ref={outerGroupRef}>
+        <TransformControls
+          object={innerGroupRef.current}
+          mode={transformMode || 'translate'}
+          onMouseUp={handleChange}
+        />
+        {innerMesh}
+      </group>
     );
   }
 
-  return meshContent;
+  return innerMesh;
 }
+
+// ─── Camera safety + AutoFit ────────────────────────────────────────────────
 
 function CameraSetup() {
   const { camera } = useThree();
-  
   useFrame(() => {
-    if (isNaN(camera.position.x) || isNaN(camera.position.y) || isNaN(camera.position.z)) {
-      console.warn("Camera position was NaN, applying safe fallback.");
-      camera.position.set(0, 2, 5);
-      camera.lookAt(0, 1, 0);
-    }
-    // Also protect if OrbitControls targets [0,0,0] and camera is at [0,0,0]
-    if (camera.position.length() < 0.001) {
-      camera.position.set(0, 2, 5);
-      camera.lookAt(0, 1, 0);
+    if (isNaN(camera.position.x) || camera.position.length() < 0.001) {
+      camera.position.set(0, 3, 8);
+      camera.lookAt(0, 0, 0);
     }
   });
   return null;
@@ -329,37 +386,41 @@ function CameraSetup() {
 
 function AutoFitController({ stats, fitTrigger }) {
   const { camera, controls } = useThree();
-
   useEffect(() => {
     if (!stats) return;
-    
-    // Scale max dimension to 10
-    const maxDim = Math.max(stats.size.x, stats.size.y, stats.size.z);
-    const targetScale = maxDim > 0 ? 10 / maxDim : 1;
-    
-    // Move camera to view the whole point cloud exactly as requested
-    camera.position.set(0, 3, 8);
+    camera.position.set(0, 3.5, 9);
     camera.lookAt(0, 0, 0);
-    
-    // If OrbitControls is present, we must update its target
-    if (controls) {
-      controls.target.set(0, 0, 0);
-      controls.update();
-    }
-    
-    console.log(`[AutoFit] Camera moved to:`, camera.position, `Looking at: 0,0,0`);
-    
-  }, [stats, fitTrigger, camera, controls]);
-
+    if (controls) { controls.target.set(0, 0, 0); controls.update(); }
+  }, [stats, fitTrigger]);
   return null;
 }
 
-export default function Scene({ 
-  objects, 
-  placedItems, 
-  selectedId, 
-  onSelect, 
-  cameraMode, 
+// ─── Keyboard global handler ───────────────────────────────────────────────
+
+function KeyboardHandler({ selectedId, onDelete, onTransformMode }) {
+  useEffect(() => {
+    const handle = (e) => {
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'Delete' || e.key === 'Backspace') { if (selectedId) onDelete(selectedId); }
+      if (e.key === 'g' || e.key === 'G') onTransformMode('translate');
+      if (e.key === 'r' || e.key === 'R') onTransformMode('rotate');
+      if (e.key === 's' || e.key === 'S') onTransformMode('scale');
+    };
+    window.addEventListener('keydown', handle);
+    return () => window.removeEventListener('keydown', handle);
+  }, [selectedId, onDelete, onTransformMode]);
+  return null;
+}
+
+// ─── Main Scene export ─────────────────────────────────────────────────────
+
+export default function Scene({
+  objects,
+  placedItems,
+  selectedId,
+  onSelect,
+  cameraMode,
   onUpdatePlacedItem,
   placementMode,
   onSceneClick,
@@ -380,66 +441,50 @@ export default function Scene({
   showRepairPanel,
   onRepairAnalyticsUpdate,
   pointCloudUrl,
-  fitTrigger
+  fitTrigger,
+  transformMode,
+  onTransformModeChange,
+  onDeleteSelected,
+  onPointCloudLoad,
 }) {
   const [pcStats, setPcStats] = useState(null);
-  
-  // Transform state to center and scale the scene
   const [sceneTransform, setSceneTransform] = useState({ position: [0, 0, 0], scale: [1, 1, 1] });
 
   const handlePointCloudLoad = useCallback((stats) => {
     setPcStats(stats);
-    
     const maxDim = Math.max(stats.size.x, stats.size.y, stats.size.z);
     const targetScale = maxDim > 0 ? 10 / maxDim : 1;
-    
-    const offset = [
-      -stats.center.x * targetScale,
-      -stats.center.y * targetScale,
-      -stats.center.z * targetScale
-    ];
-    
-    setSceneTransform({ position: offset, scale: [targetScale, targetScale, targetScale] });
-  }, []);
+    setSceneTransform({
+      position: [-stats.center.x * targetScale, -stats.center.y * targetScale, -stats.center.z * targetScale],
+      scale: [targetScale, targetScale, targetScale],
+    });
+    if (onPointCloudLoad) onPointCloudLoad(stats);
+  }, [onPointCloudLoad]);
+
   const handleSceneClickInternal = (point) => {
     if (placementMode) {
-      const localX = (point.x - sceneTransform.position[0]) / sceneTransform.scale[0];
-      const localY = (point.y - sceneTransform.position[1]) / sceneTransform.scale[1];
-      const localZ = (point.z - sceneTransform.position[2]) / sceneTransform.scale[2];
-      onSceneClick({ x: localX, y: localY, z: localZ });
+      const [sx, sy, sz] = sceneTransform.scale;
+      const [px, py, pz] = sceneTransform.position;
+      onSceneClick({ x: (point.x - px) / sx, y: (point.y - py) / sy, z: (point.z - pz) / sz });
     }
   };
 
   return (
-    <Canvas
-      camera={{ position: [0, 2, 5], fov: 60 }}
-      gl={{ antialias: true, alpha: false }}
-      shadows
-    >
+    <Canvas camera={{ position: [0, 3, 9], fov: 58 }} gl={{ antialias: true, alpha: false }} shadows>
+      <KeyboardHandler selectedId={selectedId} onDelete={onDeleteSelected} onTransformMode={onTransformModeChange} />
       <AutoFitController stats={pcStats} fitTrigger={fitTrigger} />
-      <color attach="background" args={['#0f1115']} />
-      <Environment preset="apartment" />
-      <ambientLight intensity={0.4} />
-      <directionalLight position={[10, 10, 5]} intensity={1} castShadow />
-      
-      {/* Required helpers */}
-      <gridHelper args={[20, 20]} />
-      <axesHelper args={[5]} />
-      
-      {pcStats && (
-        <Html position={[0, -2, 0]} center>
-          <div style={{ background: 'rgba(0,0,0,0.5)', padding: '4px 8px', borderRadius: '4px', fontSize: '10px', color: 'white', whiteSpace: 'nowrap', pointerEvents: 'none', marginTop: '20vh' }} id="debug-camera">
-            Debug - Bounds: Min [{pcStats.min?.x?.toFixed(1)}, {pcStats.min?.y?.toFixed(1)}, {pcStats.min?.z?.toFixed(1)}] | Max [{pcStats.max?.x?.toFixed(1)}, {pcStats.max?.y?.toFixed(1)}, {pcStats.max?.z?.toFixed(1)}] | Vtx: {pcStats.count}
-          </div>
-        </Html>
-      )}
+      <CameraSetup />
+      <color attach="background" args={['#080b12']} />
+      <ambientLight intensity={0.5} />
+      <directionalLight position={[8, 12, 6]} intensity={1.2} castShadow shadow-mapSize={[2048, 2048]} />
+      <directionalLight position={[-6, 8, -4]} intensity={0.4} />
 
       <group position={sceneTransform.position} scale={sceneTransform.scale}>
         <Suspense fallback={null}>
           <ErrorBoundary>
-            <PointCloud 
-              settings={viewSettings} 
-              removedObjects={removedObjects} 
+            <PointCloud
+              settings={viewSettings}
+              removedObjects={removedObjects}
               repairMode={repairMode}
               onRepairAnalyticsUpdate={onRepairAnalyticsUpdate}
               pointCloudUrl={pointCloudUrl}
@@ -448,7 +493,7 @@ export default function Scene({
           </ErrorBoundary>
         </Suspense>
 
-        <ProxyRoom 
+        <ProxyRoom
           viewMode={viewSettings.viewMode}
           wallOpacity={viewSettings.wallOpacity}
           floorHeight={viewSettings.floorHeight}
@@ -458,65 +503,35 @@ export default function Scene({
           showCeiling={viewSettings.showCeiling}
           placementMode={placementMode}
           onSceneClick={handleSceneClickInternal}
+          pcBounds={pcStats}
         />
 
         {showWalkablePanel && (
-          <WalkableOverlay 
-            settings={viewSettings} 
-            objects={objects} 
+          <WalkableOverlay
+            settings={viewSettings}
+            objects={objects}
             placedItems={placedItems}
             onUpdateAnalytics={onWalkableAnalyticsUpdate}
           />
         )}
 
-        <SemanticOverlay 
-          viewMode={viewSettings.viewMode}
-          settings={viewSettings}
-          objects={objects}
-          placedItems={placedItems}
-        />
-
-        <MeasurementOverlay 
-          objects={objects}
-          placedItems={placedItems}
-          settings={viewSettings}
-          visible={showMeasurements}
-        />
+        <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={objects} placedItems={placedItems} />
+        <MeasurementOverlay objects={objects} placedItems={placedItems} settings={viewSettings} visible={showMeasurements} />
 
         {showAssistantPanel && (
-          <RecommendationOverlay 
-            activeRec={activeHoverRec}
-            settings={viewSettings}
-            objects={objects}
-            placedItems={placedItems}
-          />
+          <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={objects} placedItems={placedItems} />
         )}
 
         {showGraphPanel && (
-          <GraphOverlay 
-            objects={objects}
-            placedItems={placedItems}
-            settings={viewSettings}
-            hoverSource={activeGraphSource}
-            hoverTarget={activeGraphTarget}
-          />
+          <GraphOverlay objects={objects} placedItems={placedItems} settings={viewSettings} hoverSource={activeGraphSource} hoverTarget={activeGraphTarget} />
         )}
 
         {showCVPanel && (
-          <CVOverlay 
-            settings={viewSettings}
-            pipelineStage={cvStage}
-            currentFrame={cvFrame}
-          />
+          <CVOverlay settings={viewSettings} pipelineStage={cvStage} currentFrame={cvFrame} />
         )}
 
-        {objects.map((obj) => (
-          <DetectedBoundingBox 
-            key={obj.id} 
-            object={obj} 
-            selected={selectedId === obj.id} 
-            onClick={onSelect} 
-          />
+        {objects.map(obj => (
+          <DetectedBoundingBox key={obj.id} object={obj} selected={selectedId === obj.id} onClick={onSelect} />
         ))}
 
         {placedItems.map(item => (
@@ -526,16 +541,17 @@ export default function Scene({
             selected={selectedId === item.id}
             onSelect={onSelect}
             onUpdate={onUpdatePlacedItem}
+            transformMode={transformMode}
           />
         ))}
 
-        <ContactShadows opacity={0.5} scale={10} blur={2} far={4} position={[0, viewSettings.floorHeight + 0.01, 0]} />
-        <Environment preset="city" />
-        
+        <ContactShadows opacity={0.4} scale={12} blur={2.5} far={5} position={[0, viewSettings.floorHeight + 0.01, 0]} />
+        <Environment preset="apartment" />
+
         {cameraMode === 'walk' ? (
           <WalkControls />
         ) : (
-          <OrbitControls makeDefault dampingFactor={0.05} />
+          <OrbitControls makeDefault dampingFactor={0.06} enableDamping />
         )}
       </group>
     </Canvas>

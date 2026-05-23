@@ -31,6 +31,12 @@ from miniscene.viz.immersive import write_immersive_scene_html
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MiniScene AI pipeline")
+    parser.add_argument(
+        "--mode",
+        choices=["minimal", "ultra_fast", "fast", "quality"],
+        default="minimal",
+        help="Processing mode (minimal, ultra_fast, fast, quality)",
+    )
     parser.add_argument("--video", required=True, help="Input video path")
     parser.add_argument("--out-dir", default="outputs", help="Output directory")
     parser.add_argument(
@@ -148,6 +154,35 @@ def parse_args() -> argparse.Namespace:
         default=640,
         help="Maximum image side length used in fast mode",
     )
+    parser.add_argument(
+        "--max-width",
+        type=int,
+        default=720,
+        help="Maximum image side length to resize frames to immediately during extraction",
+    )
+    parser.add_argument(
+        "--max-points",
+        type=int,
+        default=0,
+        help="Maximum number of points in point cloud (0 means no limit)",
+    )
+    parser.add_argument(
+        "--orb-max-features",
+        type=int,
+        default=1000,
+        help="Maximum ORB features to detect per frame",
+    )
+    parser.add_argument(
+        "--max-detect-keyframes",
+        type=int,
+        default=0,
+        help="Maximum keyframes to run object detection on",
+    )
+    parser.add_argument(
+        "--disable-tracking",
+        action="store_true",
+        help="Disable YOLO tracking, run predict instead",
+    )
     return parser.parse_args()
 
 
@@ -225,20 +260,87 @@ def _validate_point_cloud(points_world: np.ndarray) -> tuple[bool, str]:
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
+    import time
+    t_start_pipeline = time.perf_counter()
+
+    elapsed_video_load = 0.0
+    elapsed_frame_extraction = 0.0
+    elapsed_frame_resizing = 0.0
+    elapsed_feature_detection = 0.0
+    elapsed_feature_matching = 0.0
+    elapsed_camera_pose_estimation = 0.0
+    elapsed_depth_estimation = 0.0
+    elapsed_point_cloud_generation = 0.0
+    elapsed_object_detection = 0.0
+    elapsed_object_tracking = 0.0
+    elapsed_file_writing = 0.0
+
+    t_start_load = time.perf_counter()
     cfg = DEFAULT_MINISCENE_CONFIG
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     meta = read_video_meta(args.video)
+    elapsed_video_load = time.perf_counter() - t_start_load
 
+    # Default values from args
     effective_depth_mode = args.depth_mode
+    effective_max_frames = max(2, args.max_frames)
+    effective_sample_step = max(1, args.sample_step)
+    resize_side = args.max_width
+    orb_max_features = args.orb_max_features
+    extract_objects = args.extract_objects
+    max_detect_keyframes = args.max_detect_keyframes
+    disable_tracking = args.disable_tracking
+    disable_object_feature_dedup = args.disable_object_feature_dedup
+
+    # Mode-based overrides
+    if args.mode == "minimal":
+        effective_max_frames = 5
+        resize_side = 320
+        effective_depth_mode = "heuristic"
+        extract_objects = False
+        effective_sample_step = 16
+        orb_max_features = 0
+        max_detect_keyframes = 0
+        disable_tracking = True
+        disable_object_feature_dedup = True
+    elif args.mode == "ultra_fast":
+        effective_max_frames = 8
+        resize_side = 320
+        effective_depth_mode = "heuristic"
+        extract_objects = False
+        effective_sample_step = 12
+        orb_max_features = 500
+        max_detect_keyframes = 0
+        disable_tracking = True
+        disable_object_feature_dedup = True
+    elif args.mode == "fast":
+        effective_max_frames = 8
+        resize_side = 480
+        effective_depth_mode = "heuristic"
+        extract_objects = True
+        effective_sample_step = 12
+        orb_max_features = 500
+        max_detect_keyframes = 5
+        disable_tracking = True
+        disable_object_feature_dedup = True
+    elif args.mode == "quality":
+        effective_max_frames = 30
+        resize_side = 720
+        effective_depth_mode = "auto"
+        extract_objects = True
+        effective_sample_step = 6
+        orb_max_features = 1000
+        max_detect_keyframes = 8
+        disable_tracking = False
+        disable_object_feature_dedup = False
+
     if int(args.frame_step) > 0:
         effective_frame_step = max(1, int(args.frame_step))
     else:
         effective_frame_step = estimate_auto_frame_step(args.video)
 
-    effective_max_frames = max(2, args.max_frames)
-    effective_sample_step = max(1, args.sample_step)
     if float(args.object_score_threshold) >= 0.0:
         object_score_threshold = float(args.object_score_threshold)
     else:
@@ -250,7 +352,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         min_track_samples = int(cfg.min_track_length)
 
     print(
-        "MiniScene profile: "
+        f"MiniScene mode: {args.mode} | "
         f"confidence={cfg.confidence_threshold}, "
         f"iou={cfg.iou_threshold:.2f}, "
         f"frame_skip={'auto' if int(args.frame_step) <= 0 else 'manual'}, "
@@ -274,12 +376,62 @@ def run_pipeline(args: argparse.Namespace) -> None:
         )
 
     frames: list[np.ndarray] = []
-    for _, frame in iterate_frames(args.video, frame_step=effective_frame_step):
-        if args.fast_interior_mode:
-            frame = _resize_frame_max_side(frame, max(128, int(args.fast_max_side)))
-        frames.append(frame)
-        if len(frames) >= effective_max_frames:
-            break
+    cap = cv2.VideoCapture(str(args.video))
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Unable to open video: {args.video}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+    if total_frames > 2:
+        target_count = effective_max_frames
+        if total_frames <= target_count:
+            indices = list(range(total_frames))
+        else:
+            indices = [int(round(i * (total_frames - 1) / (target_count - 1))) for i in range(target_count)]
+        
+        indices_set = set(indices)
+        max_idx = max(indices_set)
+        
+        total_target_frames = len(indices)
+        for idx in range(max_idx + 1):
+            if idx in indices_set:
+                print(f"Processing frame {len(frames) + 1}/{total_target_frames}")
+                t_read0 = time.perf_counter()
+                ok, frame = cap.read()
+                elapsed_frame_extraction += time.perf_counter() - t_read0
+                if not ok:
+                    break
+                if resize_side > 0:
+                    t_resize0 = time.perf_counter()
+                    frame = _resize_frame_max_side(frame, resize_side)
+                    elapsed_frame_resizing += time.perf_counter() - t_resize0
+                frames.append(frame)
+            else:
+                t_grab0 = time.perf_counter()
+                ok = cap.grab()
+                elapsed_frame_extraction += time.perf_counter() - t_grab0
+                if not ok:
+                    break
+    else:
+        idx = 0
+        while True:
+            t_read0 = time.perf_counter()
+            ok, frame = cap.read()
+            elapsed_frame_extraction += time.perf_counter() - t_read0
+            if not ok:
+                break
+            if idx % effective_frame_step == 0:
+                print(f"Processing frame {len(frames) + 1}/{effective_max_frames}")
+                if resize_side > 0:
+                    t_resize0 = time.perf_counter()
+                    frame = _resize_frame_max_side(frame, resize_side)
+                    elapsed_frame_resizing += time.perf_counter() - t_resize0
+                frames.append(frame)
+                if len(frames) >= effective_max_frames:
+                    break
+            idx += 1
+
+    cap.release()
 
     if len(frames) < 2:
         raise RuntimeError("Need at least 2 sampled frames for reconstruction")
@@ -288,14 +440,32 @@ def run_pipeline(args: argparse.Namespace) -> None:
     intrinsics = default_intrinsics(proc_w, proc_h)
     print(f"Loaded {len(frames)} frames (source {meta.width}x{meta.height}, processed {proc_w}x{proc_h})")
 
-    poses = accumulate_camera_poses(frames, intrinsics)
+    t_start_traj = time.perf_counter()
+    if args.mode == "minimal":
+        poses = [np.eye(4, dtype=np.float64) for _ in range(len(frames))]
+        det_time = 0.0
+        match_time = 0.0
+        pose_estimation_time = 0.0
+        print("Minimal mode: Skipped camera trajectory estimation (using identity poses)")
+    else:
+        poses, det_time, match_time, pose_estimation_time = accumulate_camera_poses(
+            frames, intrinsics, max_features=orb_max_features
+        )
+    elapsed_camera_trajectory = time.perf_counter() - t_start_traj
+    elapsed_feature_detection = det_time
+    elapsed_feature_matching = match_time
+    elapsed_camera_pose_estimation = pose_estimation_time
     print("Estimated camera trajectory")
 
+    t_start_depth = time.perf_counter()
     estimator = DepthEstimator(mode=effective_depth_mode)
     depth_maps = []
-    for frame in tqdm(frames, desc="Estimating depth"):
+    for i, frame in enumerate(frames):
+        print(f"Estimating depth {i + 1}/{len(frames)}")
         depth_maps.append(estimator.estimate(frame))
+    elapsed_depth_estimation = time.perf_counter() - t_start_depth
 
+    t_start_pcd = time.perf_counter()
     recon = build_point_cloud(
         frames_bgr=frames,
         depth_maps=depth_maps,
@@ -303,6 +473,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
         intrinsics=intrinsics,
         sample_step=effective_sample_step,
     )
+
+    if args.max_points > 0 and len(recon.points_world) > args.max_points:
+        rng = np.random.default_rng(42)
+        downsample_indices = rng.choice(len(recon.points_world), size=args.max_points, replace=False)
+        recon.points_world = recon.points_world[downsample_indices]
+        recon.colors_rgb = recon.colors_rgb[downsample_indices]
+    elapsed_point_cloud_generation = time.perf_counter() - t_start_pcd
 
     ply_path = out_dir / "point_cloud.ply"
     traj_path = out_dir / "trajectory.json"
@@ -312,17 +489,27 @@ def run_pipeline(args: argparse.Namespace) -> None:
     mesh_o3d_path: Path | None = None
     pcd_o3d_path: Path | None = None
 
-    objects_file_name: str | None = None
+    objects_file_name = None
     tracks = []
     objects = []
-    if args.extract_objects:
+    metadata = {}
+    ground_y = 0.0
+
+    if extract_objects:
+        import json as _json
+        t_start_obj = time.perf_counter()
         allowlist = {s.strip() for s in str(args.object_labels).split(",") if s.strip()}
         max_instances_by_label = {
             "person": max(0, int(args.object_max_person_instances)),
             "bench": max(0, int(args.object_max_bench_instances)),
         }
         max_instances_by_label.update(_parse_label_max(str(args.object_label_max)))
-        objects, tracks = detect_scene_entities_3d(
+
+        # In fast/quality modes, single-frame detections count as objects.
+        # Only quality mode benefits from requiring multi-frame confirmation.
+        effective_min_observations = 1 if args.mode in ("fast", "ultra_fast", "minimal") else max(1, int(args.object_min_observations))
+
+        objects, tracks, metadata = detect_scene_entities_3d(
             frames_bgr=frames,
             depth_maps=depth_maps,
             poses_world_from_cam=poses,
@@ -332,15 +519,147 @@ def run_pipeline(args: argparse.Namespace) -> None:
             max_per_frame=max(1, int(args.object_max_per_frame)),
             label_allowlist=allowlist if allowlist else None,
             min_track_samples=min_track_samples,
-            min_object_observations=max(1, int(args.object_min_observations)),
+            min_object_observations=effective_min_observations,
             max_instances_by_label=max_instances_by_label,
-            dedup_enable=not bool(args.disable_object_feature_dedup),
+            dedup_enable=not bool(disable_object_feature_dedup),
             dedup_merge_radius_m=max(0.1, float(args.object_dedup_merge_radius)),
             dedup_feature_similarity=min(1.0, max(0.0, float(args.object_dedup_feature_similarity))),
+            max_detect_keyframes=max_detect_keyframes,
+            disable_tracking=disable_tracking,
+            out_dir=out_dir,
         )
-        objects = refine_objects_with_point_cloud(objects, recon.points_world)
-        ground_y = estimate_ground_plane(recon.points_world)
-        objects = align_objects_to_ground(objects, ground_y)
+
+        # ── Raw-detection fallback ─────────────────────────────────────────────
+        # If the pipeline produced zero objects but raw_detections.json has hits,
+        # convert each 2D YOLO detection into an estimated 3D object using simple
+        # image-space geometry.  This guarantees the frontend always gets something
+        # to display when YOLO can see objects.
+        if len(objects) == 0 and metadata.get("raw_detections_count", 0) > 0:
+            print("[objects] No 3D objects from pipeline — converting raw 2D detections to estimated objects.")
+            raw_json_path = out_dir / "raw_detections.json"
+            raw_data = {}
+            if raw_json_path.exists():
+                try:
+                    raw_data = _json.loads(raw_json_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            from miniscene.cv.objects import SceneObject, DEFAULT_SIZES
+
+            # Estimate a simple room bounding box from the point cloud for clamping.
+            if recon.points_world is not None and len(recon.points_world) > 0:
+                finite_pts = recon.points_world[np.all(np.isfinite(recon.points_world), axis=1)]
+                if len(finite_pts) > 0:
+                    pc_min = np.min(finite_pts, axis=0)
+                    pc_max = np.max(finite_pts, axis=0)
+                else:
+                    pc_min = np.array([-3.0, -2.0, -3.0])
+                    pc_max = np.array([ 3.0,  2.0,  3.0])
+            else:
+                pc_min = np.array([-3.0, -2.0, -3.0])
+                pc_max = np.array([ 3.0,  2.0,  3.0])
+
+            ground_y_est = float(pc_min[1])
+            room_w = float(pc_max[0] - pc_min[0])  # x extent
+            room_d = float(pc_max[2] - pc_min[2])  # z extent
+
+            estimated_from_raw: list[SceneObject] = []
+            label_counts: dict[str, int] = {}
+            rejection_report: dict[str, int] = {
+                "low_confidence": 0, "duplicate": 0, "invalid_bbox": 0
+            }
+
+            for frame_data in raw_data.get("frames", []):
+                frame_name = frame_data.get("frame", "frame_000.jpg")
+                for det in frame_data.get("detections", []):
+                    label = str(det.get("label", "object")).strip().lower()
+                    conf = float(det.get("confidence", 0.0))
+                    bbox = det.get("bbox_2d", [])
+
+                    if conf < 0.10:
+                        rejection_report["low_confidence"] += 1
+                        continue
+                    if len(bbox) != 4:
+                        rejection_report["invalid_bbox"] += 1
+                        continue
+
+                    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                    if x2 <= x1 or y2 <= y1:
+                        rejection_report["invalid_bbox"] += 1
+                        continue
+
+                    # Estimate 3D position from image-space bbox center:
+                    # • x: normalized horizontal position mapped onto room width
+                    # • z: use fixed mid-depth (1.5m from camera), mapped to room depth
+                    # • y: floor level + half object height
+                    if frames:
+                        img_w = frames[0].shape[1]
+                        img_h = frames[0].shape[0]
+                    else:
+                        img_w, img_h = 480, 320
+
+                    cx_norm = ((x1 + x2) / 2.0) / max(1, img_w)  # 0..1
+                    cy_norm = ((y1 + y2) / 2.0) / max(1, img_h)  # 0..1
+
+                    # Map to room coordinates
+                    world_x = float(pc_min[0]) + cx_norm * room_w
+                    # depth (z): objects higher in frame → farther away
+                    world_z = float(pc_min[2]) + cy_norm * room_d
+
+                    size = DEFAULT_SIZES.get(label, (0.7, 0.8, 0.7))
+                    obj_h = size[2]  # height is index 2 in (w,d,h) convention
+                    world_y = ground_y_est + obj_h / 2.0
+
+                    pos = np.clip(
+                        np.array([world_x, world_y, world_z], dtype=np.float32),
+                        pc_min, pc_max
+                    )
+
+                    label_counts[label] = label_counts.get(label, 0) + 1
+                    obj_idx = label_counts[label]
+
+                    # Skip duplicates of same label beyond 3 per frame
+                    if obj_idx > 3:
+                        rejection_report["duplicate"] += 1
+                        continue
+
+                    estimated_from_raw.append(SceneObject(
+                        object_id=f"{label}_{obj_idx}",
+                        label=label,
+                        position_world=pos,
+                        distance_m=1.5,
+                        observations=1,
+                        size_m=size,
+                        representative_frame_index=None,
+                        representative_bbox_xyxy=(x1, y1, x2, y2),
+                        representative_score=conf,
+                        placement_quality="estimated",
+                    ))
+
+            objects = estimated_from_raw
+            metadata["fallback_used"] = True
+            metadata["fallback_reason"] = "Converted 2D YOLO detections to estimated 3D objects"
+            metadata["rejection_report"] = rejection_report
+            metadata["final_objects_count"] = len(objects)
+            print(f"[objects] Raw-detection fallback produced {len(objects)} estimated objects.")
+        # ── End raw-detection fallback ─────────────────────────────────────────
+
+        if len(objects) > 0:
+            ground_y = estimate_ground_plane(recon.points_world)
+            objects = refine_objects_with_point_cloud(objects, recon.points_world)
+            objects = align_objects_to_ground(objects, ground_y)
+
+            # Clamp estimated fallback objects' position coordinates to point cloud boundaries
+            if recon.points_world is not None and len(recon.points_world) > 0:
+                finite_pts = recon.points_world[np.all(np.isfinite(recon.points_world), axis=1)]
+                if len(finite_pts) > 0:
+                    min_bounds = np.min(finite_pts, axis=0)
+                    max_bounds = np.max(finite_pts, axis=0)
+                    for obj in objects:
+                        if getattr(obj, "placement_quality", "good") == "estimated":
+                            obj.position_world = np.clip(obj.position_world, min_bounds, max_bounds)
+        elapsed_object_detection = metadata.get("object_detection_time", 0.0)
+        elapsed_object_tracking = metadata.get("object_tracking_time", 0.0)
 
     # Validation gate before final output writes.
     validation_errors: list[str] = []
@@ -350,10 +669,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
     else:
         print(f"Validation: {pc_msg}")
 
-    if args.extract_objects:
+    if extract_objects:
         if len(objects) <= 0:
-            validation_errors.append("Detected objects count is 0 after tracking/reconstruction")
-        validation_errors.extend(_validate_track_consistency(tracks))
+            print("WARNING: No objects detected (including fallback). Continuing with empty objects_3d.json.")
+        # Only validate track consistency when we have actual tracks; skip for fallback estimated objects.
+        if tracks:
+            validation_errors.extend(_validate_track_consistency(tracks))
 
     if validation_errors:
         print("Validation gate failed. Final outputs were not written.")
@@ -361,6 +682,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             print(f" - {msg}")
         return
 
+    t_start_file_writing = time.perf_counter()
     # Final outputs are written only after validation passes.
     write_ply(ply_path, recon.points_world, recon.colors_rgb)
     write_trajectory_json(traj_path, poses, intrinsics)
@@ -375,13 +697,35 @@ def run_pipeline(args: argparse.Namespace) -> None:
         except Exception as ex:
             print(f"Open3D mesh export skipped: {ex}")
 
-    if args.extract_objects:
-        write_objects_json(objects_path, objects, tracks=tracks, ground_y=ground_y)
+    if extract_objects:
+        write_objects_json(objects_path, objects, tracks=tracks, ground_y=ground_y, metadata=metadata)
         objects_file_name = objects_path.name
-        print(f"Detected 3D objects: {len(tracks)}")
+        print(f"Detected 3D objects: {len(objects)}")
         print(f"Detected motion tracks: {len(tracks)}")
         print(f"Ground plane Y: {ground_y:.3f}")
+        print(f"Fallback used: {metadata.get('fallback_used', False)}")
         print(f"Wrote: {objects_path}")
+    else:
+        # Write an empty objects json file if objects extraction is skipped,
+        # to ensure frontend/caching works without errors.
+        import json
+        with open(objects_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "objects": [],
+                "tracks": [],
+                "metadata": {
+                    "yolo_loaded": False,
+                    "frames_scanned": 0,
+                    "raw_detections_count": 0,
+                    "final_objects_count": 0,
+                    "rejection_reasons": {
+                        "low_confidence": 0,
+                        "unallowed_class": 0
+                    }
+                },
+                "message": "Object detection skipped in this mode"
+            }, f, indent=2)
+        print(f"Wrote empty objects file: {objects_path}")
 
     if args.immersive_viewer:
         immersive_path = out_dir / "scene_immersive.html"
@@ -399,6 +743,38 @@ def run_pipeline(args: argparse.Namespace) -> None:
     print(f"Wrote: {ply_path}")
     print(f"Wrote: {traj_path}")
     print(f"Wrote: {html_path}")
+
+    elapsed_file_writing = time.perf_counter() - t_start_file_writing
+
+    print(f"[TIMER] video_load: {elapsed_video_load:.1f}s")
+    print(f"[TIMER] frame_extraction: {elapsed_frame_extraction:.1f}s")
+    print(f"[TIMER] frame_resizing: {elapsed_frame_resizing:.1f}s")
+    print(f"[TIMER] feature_detection: {elapsed_feature_detection:.1f}s")
+    print(f"[TIMER] feature_matching: {elapsed_feature_matching:.1f}s")
+    print(f"[TIMER] camera_pose_estimation: {elapsed_camera_pose_estimation:.1f}s")
+    print(f"[TIMER] depth_estimation: {elapsed_depth_estimation:.1f}s")
+    print(f"[TIMER] point_cloud_generation: {elapsed_point_cloud_generation:.1f}s")
+    print(f"[TIMER] object_detection: {elapsed_object_detection:.1f}s")
+    print(f"[TIMER] object_tracking: {elapsed_object_tracking:.1f}s")
+    print(f"[TIMER] file_writing: {elapsed_file_writing:.1f}s")
+
+    # Output timing profiles in JSON format for the backend to parse
+    import json
+    profile_data = {
+        "frame_extraction": elapsed_frame_extraction,
+        "camera_trajectory": elapsed_camera_trajectory,
+        "feature_detection": elapsed_feature_detection,
+        "feature_matching": elapsed_feature_matching,
+        "depth_estimation": elapsed_depth_estimation,
+        "point_cloud_generation": elapsed_point_cloud_generation,
+        "object_detection": elapsed_object_detection,
+        "video_load": elapsed_video_load,
+        "frame_resizing": elapsed_frame_resizing,
+        "camera_pose_estimation": elapsed_camera_pose_estimation,
+        "object_tracking": elapsed_object_tracking,
+        "file_writing": elapsed_file_writing,
+    }
+    print("TIMING_PROFILE:" + json.dumps(profile_data))
 
 
 def main() -> None:

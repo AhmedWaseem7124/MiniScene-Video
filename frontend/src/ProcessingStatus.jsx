@@ -1,132 +1,109 @@
-import React, { useEffect, useState } from 'react';
-import { motion } from 'framer-motion';
-import { Loader2, CheckCircle2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { CheckCircle2, Loader2, Clock } from 'lucide-react';
 
 const STAGES = [
-  { id: 'upload', label: 'Uploading video...', duration: 2000 },
-  { id: 'extract', label: 'Extracting frames...', duration: 3000 },
-  { id: 'depth', label: 'Estimating depth...', duration: 4000 },
-  { id: 'recon', label: 'Reconstructing point cloud...', duration: 5000 },
-  { id: 'detect', label: 'Detecting objects...', duration: 3000 },
-  { id: 'semantics', label: 'Understanding scene...', duration: 3000 },
-  { id: 'analysis', label: 'Generating room analysis...', duration: 2000 },
-  { id: 'build', label: 'Building 3D viewer...', duration: 1000 }
+  { id: 'upload',  icon: '📤', label: 'Uploading video',           desc: 'Sending to backend...' },
+  { id: 'extract', icon: '🎬', label: 'Extracting frames',         desc: 'Sampling key frames from video' },
+  { id: 'depth',   icon: '📐', label: 'Estimating depth',          desc: 'Monocular depth per frame' },
+  { id: 'recon',   icon: '☁️', label: 'Building point cloud',      desc: 'Triangulating 3D points' },
+  { id: 'room',    icon: '🏠', label: 'Estimating room geometry',  desc: 'Fitting floor plane & walls' },
+  { id: 'done',    icon: '✅', label: 'Scene ready!',              desc: 'Your 3D room is built' },
 ];
 
-export default function ProcessingStatus({ isProcessing, onComplete }) {
-  const [currentStageIdx, setCurrentStageIdx] = useState(0);
-  const [progress, setProgress] = useState(0);
-
-  useEffect(() => {
-    if (!isProcessing) {
-      setCurrentStageIdx(0);
-      setProgress(0);
-      return;
-    }
-
-    let isMounted = true;
-    let timeoutId;
-
-    const runStages = async () => {
-      let totalTime = STAGES.reduce((acc, stage) => acc + stage.duration, 0);
-      let elapsed = 0;
-
-      // Fake progress incrementer
-      const progressInterval = setInterval(() => {
-        elapsed += 100;
-        const p = Math.min((elapsed / totalTime) * 100, 99); // max 99 until truly complete
-        if (isMounted) setProgress(p);
-      }, 100);
-
-      // Stage incrementer
-      for (let i = 0; i < STAGES.length; i++) {
-        if (!isMounted) break;
-        setCurrentStageIdx(i);
-        await new Promise(resolve => {
-          timeoutId = setTimeout(resolve, STAGES[i].duration);
-        });
-      }
-
-      clearInterval(progressInterval);
-      if (isMounted) {
-        setProgress(100);
-        setTimeout(() => {
-          if (isMounted) onComplete();
-        }, 500);
-      }
-    };
-
-    runStages();
-
-    return () => {
-      isMounted = false;
-      clearTimeout(timeoutId);
-    };
-  }, [isProcessing]);
-
+export default function ProcessingStatus({ isProcessing, currentStage = 'recon', elapsedSeconds = 0, sessionId }) {
   if (!isProcessing) return null;
 
+  const activeIndex = Math.max(0, STAGES.findIndex(s => s.id === currentStage));
+  const title = currentStage === 'done' ? 'Loading 3D Scene...' : `Processing video... ${elapsedSeconds}s`;
+
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       style={{
-        position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-        background: 'rgba(15, 17, 21, 0.9)', backdropFilter: 'blur(10px)',
-        zIndex: 200, display: 'flex', flexDirection: 'column', 
-        alignItems: 'center', justifyContent: 'center'
+        position: 'absolute', inset: 0,
+        background: 'rgba(8, 11, 18, 0.95)',
+        backdropFilter: 'blur(16px)',
+        zIndex: 200, display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: 32,
       }}
     >
-      <div style={{ width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column', gap: 30 }}>
-        
-        <div style={{ textAlign: 'center' }}>
-          <Loader2 size={48} color="var(--accent)" className="spinner" style={{ margin: '0 auto 20px', animation: 'spin 2s linear infinite' }} />
-          <h2 style={{ color: 'white', marginBottom: 8, fontSize: '1.5rem' }}>Processing Video</h2>
-          <p style={{ color: 'var(--text-muted)' }}>This may take a few minutes...</p>
-        </div>
+      {/* Header */}
+      <div style={{ textAlign: 'center' }}>
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
+          style={{ width: 56, height: 56, margin: '0 auto 18px', borderRadius: '50%', border: '3px solid rgba(99,102,241,0.2)', borderTopColor: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        />
+        <h2 style={{ fontFamily: "'Outfit', sans-serif", fontSize: '1.6rem', fontWeight: 800, background: 'linear-gradient(135deg, #a78bfa, #06b6d4)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+          {title}
+        </h2>
+        {sessionId && (
+          <p style={{ fontFamily: "monospace", fontSize: "0.8rem", color: "#06b6d4", marginTop: 4 }}>
+            Request ID: {sessionId}
+          </p>
+        )}
+        <p style={{ color: 'var(--text-muted)', marginTop: 6, fontSize: '0.9rem' }}>
+          Computer vision is analyzing your video and building a 3D scene
+        </p>
+      </div>
 
-        <div style={{ background: 'rgba(0,0,0,0.3)', padding: 24, borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {STAGES.map((stage, idx) => {
-              const isActive = idx === currentStageIdx;
-              const isDone = idx < currentStageIdx || progress === 100;
-              
-              let color = 'var(--text-muted)';
-              if (isActive) color = 'white';
-              if (isDone) color = '#22c55e'; // Green
-              
-              return (
-                <div key={stage.id} style={{ display: 'flex', alignItems: 'center', gap: 12, opacity: isActive || isDone ? 1 : 0.5 }}>
-                  {isDone ? (
-                    <CheckCircle2 size={18} color="#22c55e" />
-                  ) : isActive ? (
-                    <Loader2 size={18} color="var(--accent)" className="spinner" style={{ animation: 'spin 1s linear infinite' }} />
-                  ) : (
-                    <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px solid rgba(255,255,255,0.2)' }} />
-                  )}
-                  <span style={{ color, fontWeight: isActive ? 600 : 400, fontSize: '0.95rem' }}>{stage.label}</span>
+      {/* Stage list */}
+      <div style={{ width: '100%', maxWidth: 420, background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {STAGES.map((stage, idx) => {
+          const done = idx < activeIndex;
+          const active = idx === activeIndex;
+          const pending = idx > activeIndex;
+          return (
+            <motion.div
+              key={stage.id}
+              initial={false}
+              animate={{ opacity: pending ? 0.4 : 1 }}
+              style={{ display: 'flex', alignItems: 'center', gap: 14 }}
+            >
+              {/* Icon */}
+              <div style={{ width: 34, height: 34, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: done ? 'rgba(16,185,129,0.15)' : active ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)', border: `1px solid ${done ? 'rgba(16,185,129,0.3)' : active ? 'rgba(99,102,241,0.4)' : 'var(--border)'}` }}>
+                {done
+                  ? <CheckCircle2 size={18} color="#10b981" />
+                  : active
+                    ? <motion.span animate={{ scale: [1, 1.15, 1] }} transition={{ repeat: Infinity, duration: 1.2 }} style={{ fontSize: '1rem' }}>{stage.icon}</motion.span>
+                    : <span style={{ fontSize: '0.95rem', opacity: 0.5 }}>{stage.icon}</span>
+                }
+              </div>
+
+              {/* Text */}
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '0.88rem', fontWeight: active ? 700 : 500, color: done ? '#6ee7b7' : active ? 'white' : 'var(--text-muted)' }}>
+                  {stage.label}
                 </div>
-              );
-            })}
-          </div>
+                {active && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}
+                  >
+                    {stage.desc}
+                  </motion.div>
+                )}
+              </div>
 
-          <div style={{ marginTop: 30 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Overall Progress</span>
-              <span style={{ color: 'white', fontSize: '0.85rem', fontWeight: 600 }}>{Math.floor(progress)}%</span>
-            </div>
-            <div style={{ width: '100%', height: 6, background: 'rgba(255,255,255,0.1)', borderRadius: 3, overflow: 'hidden' }}>
-              <motion.div 
-                style={{ height: '100%', background: 'var(--accent)' }}
-                initial={{ width: 0 }}
-                animate={{ width: `${progress}%` }}
-                transition={{ duration: 0.1 }}
-              />
-            </div>
-          </div>
-        </div>
+              {/* Active shimmer bar */}
+              {active && (
+                <div style={{ width: 60, flexShrink: 0 }}>
+                  <div className="shimmer-bar" />
+                </div>
+              )}
+            </motion.div>
+          );
+        })}
+      </div>
 
+      {/* CV identity badge */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+        {['Frame Extraction', 'Depth Estimation', 'Point Cloud', 'Room Geometry'].map(label => (
+          <span key={label} className="cv-badge">{label}</span>
+        ))}
       </div>
     </motion.div>
   );
