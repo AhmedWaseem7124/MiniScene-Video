@@ -532,6 +532,9 @@ export default function Scene({
   onDeleteSelected,
   onPointCloudLoad,
   isSceneVisible,
+  roomAnalysis,
+  scaleFactor,
+  distancePickerObjects,
 }) {
   const [pcStats, setPcStats] = useState(null);
   const [sceneTransform, setSceneTransform] = useState({ position: [0, 0, 0], scale: [1, 1, 1] });
@@ -727,7 +730,16 @@ export default function Scene({
         )}
 
         <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={alignedObjects} placedItems={placedItems} />
-        <MeasurementOverlay objects={alignedObjects} placedItems={placedItems} settings={viewSettings} visible={showMeasurements} />
+        <MeasurementOverlay 
+          objects={alignedObjects} 
+          placedItems={placedItems} 
+          settings={viewSettings} 
+          visible={showMeasurements} 
+          roomAnalysis={roomAnalysis}
+          pcStats={pcStats}
+          scaleFactor={scaleFactor}
+          distancePickerObjects={distancePickerObjects}
+        />
 
         {showAssistantPanel && (
           <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={alignedObjects} placedItems={placedItems} />

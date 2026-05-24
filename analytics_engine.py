@@ -180,6 +180,11 @@ def generate_room_analysis(session_id, session_dir):
             "width": round(bounds["width"], 2),
             "length": round(bounds["length"], 2),
             "height": round(bounds["height"], 2),
+            "width_m": round(bounds["width"], 2),
+            "length_m": round(bounds["length"], 2),
+            "height_m": round(bounds["height"], 2),
+            "floor_area_m2": round(floor_area, 2),
+            "scale_source": "estimated_from_point_cloud",
             "unit": "estimated meters"
         },
         "space": {

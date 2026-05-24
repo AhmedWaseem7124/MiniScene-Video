@@ -1866,6 +1866,18 @@ def write_objects_json(
             pos[1] = float(ground_y)
 
         size = list(obj.size_m) if obj.size_m is not None else None
+        size_dict = {
+            "width": float(size[0]),
+            "height": float(size[1]),
+            "depth": float(size[2])
+        } if size is not None else None
+
+        is_estimated = (obj.placement_quality == "estimated")
+        measurement_source = "estimated_from_detection_and_default_size" if is_estimated else "estimated_from_depth_map"
+        if is_estimated:
+            measurement_confidence = 0.55
+        else:
+            measurement_confidence = 0.75 if obj.observations >= 2 else 0.65
 
         item_payload = {
             "id": obj.object_id,
@@ -1881,8 +1893,10 @@ def write_objects_json(
             "sprite_file": obj.sprite_file,
             "placement_quality": obj.placement_quality,
             "source_frame": f"frame_{obj.representative_frame_index:03d}.jpg" if obj.representative_frame_index is not None else None,
-            "size_m": size,
+            "size_m": size_dict,
             "size": size,
+            "measurement_confidence": measurement_confidence,
+            "measurement_source": measurement_source,
         }
         if getattr(obj, "source_frames", None) is not None:
             item_payload["source_frames"] = obj.source_frames

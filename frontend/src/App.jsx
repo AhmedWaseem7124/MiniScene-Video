@@ -12,6 +12,7 @@ import ControlsHelp from './ControlsHelp';
 import ViewSettings from './ViewSettings';
 import SemanticPanel from './SemanticPanel';
 import AnalyticsPanel from './AnalyticsPanel';
+import MeasurementPanel from './MeasurementPanel';
 import AssistantPanel from './AssistantPanel';
 import SceneGraphPanel from './SceneGraphPanel';
 import WalkablePanel from './WalkablePanel';
@@ -49,9 +50,20 @@ function App() {
   // Secondary panels (more menu)
   const [showSemanticPanel, setShowSemanticPanel] = useState(false);
   const [showAnalyticsPanel, setShowAnalyticsPanel] = useState(false);
+  const [showMeasurementPanel, setShowMeasurementPanel] = useState(false);
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
   const [showGraphPanel, setShowGraphPanel] = useState(false);
   const [showWalkablePanel, setShowWalkablePanel] = useState(false);
+
+  const [roomAnalysis, setRoomAnalysis] = useState(null);
+  const [scaleFactor, setScaleFactor] = useState(1.0);
+  const [calibrationInfo, setCalibrationInfo] = useState({
+    status: 'Estimated',
+    source: 'estimated_from_point_cloud',
+    value: null
+  });
+  const [distancePickerActive, setDistancePickerActive] = useState(false);
+  const [distancePickerObjects, setDistancePickerObjects] = useState([]);
 
   const [activeHoverRec, setActiveHoverRec] = useState(null);
   const [activeGraphSource, setActiveGraphSource] = useState(null);
@@ -173,7 +185,20 @@ function App() {
             mouse: [0.1, 0.04, 0.06],
             remote: [0.2, 0.03, 0.05],
           };
-          const size = obj.size_m || obj.box_3d?.size || obj.dimensions || DEFAULT_SIZES[labelKey] || [0.8, 0.8, 0.8];
+          let size = [0.8, 0.8, 0.8];
+          if (obj.size_m) {
+            if (Array.isArray(obj.size_m)) {
+              size = obj.size_m;
+            } else if (typeof obj.size_m === 'object') {
+              size = [obj.size_m.width || 0.8, obj.size_m.height || 0.8, obj.size_m.depth || 0.8];
+            }
+          } else if (obj.box_3d?.size) {
+            size = obj.box_3d.size;
+          } else if (obj.dimensions) {
+            size = obj.dimensions;
+          } else if (DEFAULT_SIZES[labelKey]) {
+            size = DEFAULT_SIZES[labelKey];
+          }
 
           return {
             ...obj,
@@ -192,6 +217,74 @@ function App() {
         setObjectDetectionMetadata(null);
       });
   }, [objectsUrl]);
+
+  // Load room analysis whenever analysisUrl changes
+  useEffect(() => {
+    if (!analysisUrl) return;
+    fetch(analysisUrl)
+      .then(r => { if (!r.ok) throw new Error('Not found'); return r.json(); })
+      .then(data => setRoomAnalysis(data))
+      .catch(() => setRoomAnalysis(null));
+  }, [analysisUrl]);
+
+  const handleSelectObject = (id) => {
+    if (distancePickerActive) {
+      setDistancePickerObjects(prev => {
+        if (prev.includes(id)) {
+          return prev.filter(x => x !== id);
+        }
+        if (prev.length >= 2) {
+          return [prev[0], id];
+        }
+        return [...prev, id];
+      });
+    } else {
+      setSelectedId(id);
+    }
+  };
+
+  const handleCalibrateHeight = (known, current) => {
+    if (current > 0) {
+      const factor = known / current;
+      setScaleFactor(factor);
+      setCalibrationInfo({
+        status: 'Calibrated',
+        source: 'user_calibrated_room_height',
+        value: known
+      });
+    }
+  };
+
+  const handleCalibrateObject = (objId, known, current) => {
+    if (current > 0) {
+      const factor = known / current;
+      setScaleFactor(factor);
+      setCalibrationInfo({
+        status: 'Calibrated',
+        source: 'user_calibrated_object_size',
+        value: known
+      });
+    }
+  };
+
+  const handleResetCalibration = () => {
+    setScaleFactor(1.0);
+    setCalibrationInfo({
+      status: 'Estimated',
+      source: 'estimated_from_point_cloud',
+      value: null
+    });
+  };
+
+  const handleToggleDistancePicker = () => {
+    setDistancePickerActive(prev => {
+      const next = !prev;
+      if (!next) {
+        setDistancePickerObjects([]);
+      }
+      return next;
+    });
+  };
 
   const handleDeleteObject = useCallback((id) => {
     const deletedObj = objects.find(o => o.id === id);
@@ -270,6 +363,12 @@ function App() {
     setGraphUrl(null);
     setObjectDetectionMetadata(null);
     setRemovedObjects([]);
+    setRoomAnalysis(null);
+    setScaleFactor(1.0);
+    setCalibrationInfo({ status: 'Estimated', source: 'estimated_from_point_cloud', value: null });
+    setDistancePickerActive(false);
+    setDistancePickerObjects([]);
+    setShowMeasurementPanel(false);
 
     const timestamp = Date.now();
     const reqId = `req_${timestamp}`;
@@ -574,13 +673,13 @@ function App() {
             objects={objects}
             placedItems={placedItems}
             selectedId={selectedId}
-            onSelect={setSelectedId}
+            onSelect={handleSelectObject}
             cameraMode={cameraMode}
             onUpdatePlacedItem={handleUpdateObject}
             placementMode={placementItem !== null}
             onSceneClick={handleSceneClick}
             viewSettings={viewSettings}
-            showMeasurements={showAnalyticsPanel}
+            showMeasurements={showMeasurementPanel}
             activeHoverRec={activeHoverRec}
             showAssistantPanel={showAssistantPanel}
             showGraphPanel={showGraphPanel}
@@ -602,6 +701,9 @@ function App() {
             onDeleteSelected={handleDeleteObject}
             onPointCloudLoad={handlePointCloudLoad}
             isSceneVisible={processState === 'READY'}
+            roomAnalysis={roomAnalysis}
+            scaleFactor={scaleFactor}
+            distancePickerObjects={distancePickerObjects}
           />
         )}
 
@@ -691,7 +793,7 @@ function App() {
               <div style={{ position: 'absolute', bottom: '110%', right: 0, background: 'rgba(14,18,28,0.97)', border: '1px solid var(--border)', borderRadius: 12, padding: 8, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
                 {[
                   { label: 'Semantics', icon: <Activity size={15} />, key: 'semantic', set: setShowSemanticPanel, val: showSemanticPanel, color: '#a78bfa' },
-                  { label: 'Measure', icon: <Ruler size={15} />, key: 'analytics', set: setShowAnalyticsPanel, val: showAnalyticsPanel, color: '#38bdf8' },
+                  { label: 'Measure', icon: <Ruler size={15} />, key: 'measurement', set: setShowMeasurementPanel, val: showMeasurementPanel, color: '#06b6d4' },
                   { label: 'Assistant', icon: <Sparkles size={15} />, key: 'assistant', set: setShowAssistantPanel, val: showAssistantPanel, color: '#f59e0b' },
                   { label: 'Scene Graph', icon: <Network size={15} />, key: 'graph', set: setShowGraphPanel, val: showGraphPanel, color: '#ec4899' },
                   { label: 'Walkable', icon: <Map size={15} />, key: 'walkable', set: setShowWalkablePanel, val: showWalkablePanel, color: '#22c55e' },
@@ -743,6 +845,29 @@ function App() {
         )}
         {showAnalyticsPanel && (
           <AnalyticsPanel objects={objects} placedItems={placedItems} settings={viewSettings} onClose={() => setShowAnalyticsPanel(false)} url={analysisUrl} />
+        )}
+        {showMeasurementPanel && (
+          <MeasurementPanel
+            objects={objects}
+            placedItems={placedItems}
+            selectedId={selectedId}
+            onSelect={handleSelectObject}
+            roomAnalysis={roomAnalysis}
+            pcStats={pcStats}
+            scaleFactor={scaleFactor}
+            calibrationInfo={calibrationInfo}
+            onCalibrateHeight={handleCalibrateHeight}
+            onCalibrateObject={handleCalibrateObject}
+            onResetCalibration={handleResetCalibration}
+            distancePickerActive={distancePickerActive}
+            onToggleDistancePicker={handleToggleDistancePicker}
+            distancePickerObjects={distancePickerObjects}
+            onClose={() => {
+              setShowMeasurementPanel(false);
+              setDistancePickerActive(false);
+              setDistancePickerObjects([]);
+            }}
+          />
         )}
         {showAssistantPanel && (
           <AssistantPanel objects={objects} placedItems={placedItems} settings={viewSettings} onClose={() => setShowAssistantPanel(false)} onAutoPlace={handleAutoPlace} onHoverRec={setActiveHoverRec} />

@@ -138,7 +138,17 @@ def _write_analytics_stubs(session_id, session_dir):
     analysis_path = os.path.join(session_dir, 'room_analysis.json')
     if not os.path.exists(analysis_path):
         analysis_stub = {
-            "dimensions": {"width": 5.0, "length": 5.0, "height": 3.0, "unit": "estimated meters"},
+            "dimensions": {
+                "width": 5.0, 
+                "length": 5.0, 
+                "height": 3.0, 
+                "width_m": 5.0, 
+                "length_m": 5.0, 
+                "height_m": 3.0, 
+                "floor_area_m2": 25.0, 
+                "scale_source": "estimated_from_point_cloud", 
+                "unit": "estimated meters"
+            },
             "space": {"floor_area": 25.0, "occupied_percentage": 0, "free_percentage": 100, "object_density": 0.0},
             "scene": {"estimated_room_type": "Unknown", "room_type_confidence": 0.5, "complexity": "Low", "reconstruction_confidence": 0.8},
             "dominant_colors": ["#6b6b6b", "#2f2f2f", "#9a8f7a"]
