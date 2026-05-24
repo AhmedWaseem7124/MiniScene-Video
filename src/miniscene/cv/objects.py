@@ -37,6 +37,8 @@ class SceneObject:
     representative_score: float | None = None
     sprite_file: str | None = None
     placement_quality: str = "good"
+    source_frames: list[str] | None = None
+    merged_from: list[str] | None = None
 
 
 @dataclass
@@ -393,6 +395,90 @@ def detect_objects_3d(
     return _objects_from_tracks(tracks, merge_radius_m=1.0)
 
 
+def deduplicate_objects(objects: list[SceneObject]) -> list[SceneObject]:
+    MERGE_THRESHOLDS = {
+        "bed": 2.0,
+        "couch": 1.8,
+        "sofa": 1.8,
+        "dining table": 1.5,
+        "table": 1.5,
+        "chair": 0.8,
+        "potted plant": 0.7,
+        "tv": 1.2,
+        "default": 1.0
+    }
+
+    # Group by label
+    grouped: dict[str, list[SceneObject]] = {}
+    for obj in objects:
+        grouped.setdefault(obj.label.strip().lower(), []).append(obj)
+
+    merged_objects: list[SceneObject] = []
+
+    for label, group in grouped.items():
+        threshold = MERGE_THRESHOLDS.get(label, MERGE_THRESHOLDS["default"])
+        label_merged: list[SceneObject] = []
+        
+        for obj in group:
+            if not getattr(obj, "source_frames", None):
+                frame_name = f"frame_{obj.representative_frame_index:03d}.jpg" if obj.representative_frame_index is not None else "unknown.jpg"
+                obj.source_frames = [frame_name]
+            if not getattr(obj, "merged_from", None):
+                obj.merged_from = [str(obj.object_id)]
+
+            match_idx = -1
+            best_d = 1e9
+            for i, m in enumerate(label_merged):
+                d = float(np.linalg.norm(obj.position_world - m.position_world))
+                if d < threshold and d < best_d:
+                    best_d = d
+                    match_idx = i
+
+            if match_idx == -1:
+                label_merged.append(obj)
+            else:
+                m = label_merged[match_idx]
+                print(f"Merging duplicate {m.label}: {obj.object_id} -> {m.object_id}")
+                
+                # Average position_world
+                w_old = max(1, int(m.observations))
+                w_new = max(1, int(obj.observations))
+                total_w = w_old + w_new
+                
+                m.position_world = ((m.position_world * w_old) + (obj.position_world * w_new)) / float(total_w)
+                m.distance_m = float((m.distance_m * w_old + obj.distance_m * w_new) / float(total_w))
+                
+                # Average size
+                if m.size_m is not None and obj.size_m is not None:
+                    m_size = np.array(m.size_m, dtype=np.float32)
+                    obj_size = np.array(obj.size_m, dtype=np.float32)
+                    avg_size = ((m_size * w_old) + (obj_size * w_new)) / float(total_w)
+                    m.size_m = (float(avg_size[0]), float(avg_size[1]), float(avg_size[2]))
+                
+                m.observations = total_w
+                
+                if obj.representative_score is not None:
+                    if m.representative_score is None or obj.representative_score > m.representative_score:
+                        m.representative_score = obj.representative_score
+                        m.representative_frame_index = obj.representative_frame_index
+                        m.representative_bbox_xyxy = obj.representative_bbox_xyxy
+
+                if obj.placement_quality == "estimated" or m.placement_quality == "estimated":
+                    m.placement_quality = "estimated"
+                
+                m_frames = set(m.source_frames or [])
+                obj_frames = set(obj.source_frames or [])
+                m.source_frames = sorted(list(m_frames.union(obj_frames)))
+                
+                m_from = set(m.merged_from or [])
+                obj_from = set(obj.merged_from or [])
+                m.merged_from = sorted(list(m_from.union(obj_from)))
+
+        merged_objects.extend(label_merged)
+
+    return merged_objects
+
+
 def detect_scene_entities_3d(
     frames_bgr: list[np.ndarray],
     depth_maps: list[np.ndarray],
@@ -569,7 +655,19 @@ def detect_scene_entities_3d(
         else:
             rejection_report["duplicate"] += 1
             
-    # 6. Re-index IDs to have label_index format as requested by user
+    pre_dedup = len(final_objects)
+    
+    # Initial formatted indexing for logging
+    label_counts = {}
+    for obj in final_objects:
+        lbl_clean = obj.label.strip().lower().replace(" ", "_")
+        label_counts[lbl_clean] = label_counts.get(lbl_clean, 0) + 1
+        obj.object_id = f"{lbl_clean}_{label_counts[lbl_clean]}"
+
+    # Deduplicate objects
+    final_objects = deduplicate_objects(final_objects)
+
+    # Final formatted indexing for clean sequence
     label_counts = {}
     for obj in final_objects:
         lbl_clean = obj.label.strip().lower().replace(" ", "_")
@@ -579,7 +677,12 @@ def detect_scene_entities_3d(
     metadata["rejection_report"] = rejection_report
     metadata["fallback_used"] = (len(final_objects) > len(objects)) or (len(final_objects) == 0 and metadata.get("raw_detections_count", 0) > 0)
     metadata["fallback_reason"] = "Converted 2D YOLO detections to estimated 3D objects"
+    
+    metadata["pre_dedup_object_count"] = pre_dedup
     metadata["final_objects_count"] = len(final_objects)
+    metadata["merged_duplicates_count"] = pre_dedup - len(final_objects)
+    metadata["deduplication_enabled"] = True
+
     metadata["object_tracking_time"] += pytime.perf_counter() - t_track_start
 
     return final_objects, tracks, metadata
@@ -1597,7 +1700,7 @@ def write_objects_json(
 
         size = list(obj.size_m) if obj.size_m is not None else None
 
-        object_payload.append({
+        item_payload = {
             "id": obj.object_id,
             "label": obj.label,
             "confidence": float(obj.representative_score) if obj.representative_score is not None else None,
@@ -1613,7 +1716,13 @@ def write_objects_json(
             "source_frame": f"frame_{obj.representative_frame_index:03d}.jpg" if obj.representative_frame_index is not None else None,
             "size_m": size,
             "size": size,
-        })
+        }
+        if getattr(obj, "source_frames", None) is not None:
+            item_payload["source_frames"] = obj.source_frames
+        if getattr(obj, "merged_from", None) is not None:
+            item_payload["merged_from"] = obj.merged_from
+            
+        object_payload.append(item_payload)
 
     track_payload = [
         {
@@ -1647,6 +1756,18 @@ def write_objects_json(
         metadata["reason"] = metadata.get("fallback_reason") or "Converted 2D YOLO detections to estimated 3D objects"
         metadata["fallback_used"] = metadata.get("fallback_used", False)
         payload["metadata"] = metadata
+        
+        # Write raw_detections.json separately as requested
+        if "raw_detections" in metadata:
+            raw_path = Path(path).parent / "raw_detections.json"
+            try:
+                with open(raw_path, "w", encoding="utf-8") as rf:
+                    json.dump({
+                        "raw_detections": metadata["raw_detections"]
+                    }, rf, indent=2)
+                print(f"Wrote raw detections file: {raw_path}")
+            except Exception as e:
+                print(f"Error writing raw detections: {e}")
     else:
         payload["metadata"] = {
             "yolo_loaded": True,

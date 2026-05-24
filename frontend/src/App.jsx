@@ -410,7 +410,14 @@ function App() {
                       <div className="object-info">
                         <div className="object-icon" style={{ fontSize: '1.15rem' }}>{emoji}</div>
                         <div className="object-details">
-                          <h3 style={{ textTransform: 'capitalize' }}>{obj.label}</h3>
+                          <h3 style={{ textTransform: 'capitalize', display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px' }}>
+                            <span>{obj.label}</span>
+                            {obj.observations && obj.observations > 1 && (
+                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 400, textTransform: 'none' }}>
+                                — observed in {obj.observations} frames
+                              </span>
+                            )}
+                          </h3>
                           <p style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                             <span style={{ background: 'rgba(6,182,212,0.12)', color: '#06b6d4', padding: '0px 5px', borderRadius: 6, fontSize: '0.7rem' }}>
                               {Math.round((obj.confidence || 0) * 100)}% conf
