@@ -176,15 +176,38 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
 // detected but we do not have an explicit PlacedFurniture for it.
 
 const LABEL_TO_MODEL_TYPE = {
-  chair:         'Chair',
-  couch:         'Sofa',
-  sofa:          'Sofa',
-  'dining table':'Table',
-  table:         'Table',
-  bed:           'Bed',
-  plant:         'Plant',
-  tv:            'TVStand',
-  monitor:       'TVStand',
+  chair:          'Chair',
+  couch:          'Sofa',
+  sofa:           'Sofa',
+  bench:          'Sofa',
+  'dining table': 'Table',
+  table:          'Table',
+  bed:            'Bed',
+  plant:          'Plant',
+  'potted plant': 'Plant',
+  tv:             'TVStand',
+  monitor:        'TVStand',
+  rug:            'Rug',
+  carpet:         'Rug',
+  mirror:         'Mirror',
+  painting:       'Painting',
+  'wall art':     'Painting',
+  lamp:           'Light',
+  light:          'Light',
+  curtain:        'Painting',
+  shelf:          'Bookshelf',
+  cupboard:       'Cupboard',
+  wardrobe:       'Cupboard',
+  cabinet:        'Cupboard',
+  refrigerator:   'Cupboard',
+  microwave:      'Cupboard',
+  oven:           'Cupboard',
+  sink:           'Cupboard',
+  vase:           'Decoration',
+  book:           'Bookshelf',
+  clock:          'Mirror',
+  window:         'Mirror',
+  door:           'Mirror',
 };
 
 function DetectedPlaceholderModel({ label, size }) {
@@ -237,13 +260,14 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
   // Object base approach:
   // group position is set to the base of the object: base_position
   const pos = object.box_3d.base_position || [x, viewSettings?.floorHeight || -2, z];
+  const rotY = object.box_3d?.rotationY || 0;
 
   // For debug output:
   const [x_scene, y_scene, z_scene] = object.converted_center || [x, -y, -z];
   const floorY = viewSettings?.floorHeight || -2;
 
   return (
-    <group position={pos}>
+    <group position={pos} rotation={[0, rotY, 0]}>
       {/* Placeholder model */}
       <group position={[0, h / 2, 0]}>
         <DetectedPlaceholderModel label={label} size={[w, h, d]} />
@@ -307,15 +331,26 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
             ? 'rgba(165,180,252,0.5)' 
             : (isEstimated ? 'rgba(251,113,133,0.4)' : 'rgba(103,232,249,0.4)')}`,
         }}>
-          <div>
-            {label}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>{label}</span>
+            <span style={{
+              background: object.source === 'heuristic' ? 'rgba(249,115,22,0.9)' : 'rgba(6,182,212,0.9)',
+              padding: '2px 6px',
+              borderRadius: 4,
+              fontSize: '0.6rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              fontWeight: 800
+            }}>
+              {object.source === 'heuristic' ? 'HEURISTIC' : 'YOLO'}
+            </span>
             {isEstimated ? (
-              <span style={{ marginLeft: 5, background: 'rgba(0,0,0,0.25)', padding: '2px 5px', borderRadius: 4, fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              <span style={{ background: 'rgba(0,0,0,0.25)', padding: '2px 5px', borderRadius: 4, fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Estimated
               </span>
             ) : (
               confPct > 0 && (
-                <span style={{ marginLeft: 5, fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
+                <span style={{ fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
                   {confPct}%
                 </span>
               )
@@ -562,9 +597,53 @@ export default function Scene({
       const clampedX = Math.max(minX + margin, Math.min(maxX - margin, x_scene));
       const clampedZ = Math.max(minZ + margin, Math.min(maxZ - margin, z_scene));
 
-      // Snap to floorHeight
+      // Snapping classification based on label
+      const labelLower = obj.label?.toLowerCase() || '';
+      const isWallObject = ['painting', 'mirror', 'curtain', 'window', 'clock', 'wall art'].includes(labelLower);
+      const isWallMountedOrStandingAgainstWall = ['cupboard', 'wardrobe', 'cabinet', 'shelf', 'painting', 'mirror', 'curtain', 'window', 'clock', 'wall art'].includes(labelLower);
+
+      let finalX = clampedX;
+      let finalZ = clampedZ;
+      let rotationY = 0;
+
+      if (isWallMountedOrStandingAgainstWall) {
+        const distToLeft = Math.abs(clampedX - minX);
+        const distToRight = Math.abs(clampedX - maxX);
+        const distToBack = Math.abs(clampedZ - minZ);
+        const distToFront = Math.abs(clampedZ - maxZ);
+        const minDist = Math.min(distToLeft, distToRight, distToBack, distToFront);
+
+        if (minDist === distToLeft) {
+          // Snap flush against left wall
+          finalX = minX + w / 2;
+          rotationY = Math.PI / 2; // face +X
+        } else if (minDist === distToRight) {
+          // Snap flush against right wall
+          finalX = maxX - w / 2;
+          rotationY = -Math.PI / 2; // face -X
+        } else if (minDist === distToBack) {
+          // Snap flush against back wall
+          finalZ = minZ + d / 2;
+          rotationY = 0; // face +Z
+        } else {
+          // Snap flush against front wall
+          finalZ = maxZ - d / 2;
+          rotationY = Math.PI; // face -Z
+        }
+      }
+
+      // Height logic
       const floorY = viewSettings.floorHeight || -2;
-      const finalPos = [clampedX, floorY, clampedZ];
+      let finalY = floorY + h / 2; // Default for floor items
+
+      if (isWallObject) {
+        // Ceiling estimation
+        const ceilingY = pcStats && pcStats.max ? -pcStats.min.y : 3;
+        // Keep estimated Y position within wall limits
+        finalY = Math.max(floorY + h / 2 + 0.1, Math.min(ceilingY - h / 2 - 0.1, y_scene));
+      }
+
+      const finalPos = [finalX, finalY - h / 2, finalZ];
 
       return {
         ...obj,
@@ -572,9 +651,10 @@ export default function Scene({
         converted_center: [x_scene, y_scene, z_scene],
         box_3d: {
           ...obj.box_3d,
-          center: [clampedX, floorY + h / 2, clampedZ],
+          center: [finalX, finalY, finalZ],
           base_position: finalPos,
           size: [w, h, d],
+          rotationY: rotationY,
         }
       };
     });

@@ -10,6 +10,7 @@ import numpy as np
 from miniscene.cv.motion import CameraIntrinsics
 from miniscene.config import DEFAULT_MINISCENE_CONFIG
 from miniscene.recon.reconstruct import camera_to_world, pixel_to_camera_point
+from miniscene.cv.indoor_objects import detect_indoor_custom_objects
 
 
 @dataclass
@@ -22,6 +23,7 @@ class ObjectObservation:
     position_world: np.ndarray
     distance_m: float
     placement_quality: str = "good"
+    source: str = "yolo"
 
 
 @dataclass
@@ -39,6 +41,7 @@ class SceneObject:
     placement_quality: str = "good"
     source_frames: list[str] | None = None
     merged_from: list[str] | None = None
+    source: str = "yolo"
 
 
 @dataclass
@@ -49,6 +52,7 @@ class SceneTrackSample:
     score: float | None = None
     bbox_xyxy: tuple[int, int, int, int] | None = None
     placement_quality: str = "good"
+    source: str = "yolo"
 
 
 @dataclass
@@ -266,6 +270,21 @@ def _load_yolo_detector(model_name: str = "yolov8n.pt") -> object:
     return YOLO(model_name)
 
 
+LABEL_MAPPING = {
+    "potted plant": "plant",
+    "dining table": "table",
+    "tv": "tv",
+    "couch": "sofa",
+    "book": "bookshelf/object",
+    "cupboard": "wardrobe",
+    "carpet": "rug",
+    "wall art": "painting"
+}
+
+def map_label(lbl: str) -> str:
+    lbl_clean = lbl.strip().lower()
+    return LABEL_MAPPING.get(lbl_clean, lbl_clean)
+
 COMMON_OBJECT_LABELS = {
     "chair",
     "couch",
@@ -284,6 +303,27 @@ COMMON_OBJECT_LABELS = {
     "sofa",
     "table",
     "person",
+    "bench",
+    "keyboard",
+    "mouse",
+    "remote",
+    "plant",
+    "rug",
+    "carpet",
+    "painting",
+    "wall art",
+    "mirror",
+    "lamp",
+    "light",
+    "curtain",
+    "shelf",
+    "cupboard",
+    "wardrobe",
+    "cabinet",
+    "pillow",
+    "blanket",
+    "door",
+    "window",
 }
 
 
@@ -305,6 +345,27 @@ CLASS_SCORE_THRESHOLDS = {
     "book": 0.15,
     "clock": 0.15,
     "person": 0.15,
+    "bench": 0.15,
+    "keyboard": 0.15,
+    "mouse": 0.15,
+    "remote": 0.15,
+    "plant": 0.15,
+    "rug": 0.15,
+    "carpet": 0.15,
+    "painting": 0.15,
+    "wall art": 0.15,
+    "mirror": 0.15,
+    "lamp": 0.15,
+    "light": 0.15,
+    "curtain": 0.15,
+    "shelf": 0.15,
+    "cupboard": 0.15,
+    "wardrobe": 0.15,
+    "cabinet": 0.15,
+    "pillow": 0.15,
+    "blanket": 0.15,
+    "door": 0.15,
+    "window": 0.15,
 }
 
 
@@ -326,6 +387,26 @@ DEFAULT_SIZES = {
     "book": (0.2, 0.05, 0.25),
     "clock": (0.3, 0.3, 0.1),
     "person": (0.6, 1.7, 0.4),
+    
+    # New labels
+    "rug": (2.0, 0.03, 1.5),
+    "painting": (1.2, 0.8, 0.05),
+    "mirror": (0.8, 1.2, 0.05),
+    "plant": (0.5, 1.2, 0.5),
+    "lamp": (0.4, 1.5, 0.4),
+    "curtain": (1.5, 2.0, 0.05),
+    "cupboard": (1.2, 2.0, 0.5),
+    "wardrobe": (1.5, 2.2, 0.6),
+    "cabinet": (1.0, 1.2, 0.4),
+    "shelf": (1.2, 1.8, 0.3),
+    "pillow": (0.5, 0.2, 0.35),
+    "blanket": (1.5, 0.05, 1.2),
+    "door": (0.9, 2.1, 0.05),
+    "window": (1.2, 1.0, 0.05),
+    "bench": (1.2, 0.45, 0.4),
+    "keyboard": (0.45, 0.03, 0.15),
+    "mouse": (0.1, 0.04, 0.06),
+    "remote": (0.2, 0.03, 0.05),
 }
 
 
@@ -404,7 +485,17 @@ def deduplicate_objects(objects: list[SceneObject]) -> list[SceneObject]:
         "table": 1.5,
         "chair": 0.8,
         "potted plant": 0.7,
+        "plant": 0.7,
         "tv": 1.2,
+        "rug": 2.0,
+        "carpet": 2.0,
+        "painting": 1.5,
+        "mirror": 1.5,
+        "curtain": 1.5,
+        "cupboard": 1.5,
+        "wardrobe": 1.5,
+        "shelf": 1.5,
+        "lamp": 1.2,
         "default": 1.0
     }
 
@@ -625,6 +716,7 @@ def detect_scene_entities_3d(
             representative_bbox_xyxy=obs.bbox_xyxy,
             representative_score=float(obs.score),
             placement_quality="estimated",
+            source=getattr(obs, "source", "yolo"),
         )
         final_objects.append(fallback_obj)
 
@@ -944,6 +1036,7 @@ def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) 
                 representative_bbox_xyxy=best_sample.bbox_xyxy,
                 representative_score=float(best_sample.score) if best_sample.score is not None else None,
                 placement_quality=p_q,
+                source=getattr(best_sample, "source", "yolo"),
             )
         )
         next_id += 1
@@ -979,6 +1072,7 @@ def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) 
             m.representative_score = obj.representative_score
             m.representative_frame_index = obj.representative_frame_index
             m.representative_bbox_xyxy = obj.representative_bbox_xyxy
+            m.source = obj.source
 
     for i, o in enumerate(merged, start=1):
         o.object_id = i
@@ -1195,13 +1289,14 @@ def _detect_observations(
             for det_idx, (box, score, label_id, yolo_track_id) in enumerate(zip(xyxy, confs, clss, ids)):
                 x1, y1, x2, y2 = [int(v) for v in box]
                 label = str(names.get(int(label_id), f"obj_{int(label_id)}"))
-                label_key = label.strip().lower()
+                mapped_lbl = map_label(label)
+                label_key = mapped_lbl.strip().lower()
                 mask = masks_data[det_idx] if masks_data is not None and det_idx < len(masks_data) else None
 
-                if label_allowlist and label not in label_allowlist:
+                if label_allowlist and mapped_lbl not in label_allowlist:
                     metadata["rejection_reasons"]["unallowed_class"] += 1
                     continue
-                if float(score) < _label_threshold(label, float(score_threshold)):
+                if float(score) < _label_threshold(mapped_lbl, float(score_threshold)):
                     metadata["rejection_reasons"]["low_confidence"] += 1
                     continue
 
@@ -1221,13 +1316,14 @@ def _detect_observations(
                 frame_candidates.append(
                     ObjectObservation(
                         frame_index=frame_idx,
-                        label=label,
+                        label=mapped_lbl,
                         score=float(score),
                         track_id=int(yolo_track_id) if int(yolo_track_id) >= 0 else None,
                         bbox_xyxy=refined_bbox,
                         position_world=p_world.astype(np.float32),
                         distance_m=dist,
                         placement_quality=placement_quality,
+                        source="yolo"
                     )
                 )
                 if label_key in COMMON_OBJECT_LABELS:
@@ -1236,7 +1332,7 @@ def _detect_observations(
                     bbox_w = max(0, refined_bbox[2] - refined_bbox[0])
                     bbox_h = max(0, refined_bbox[3] - refined_bbox[1])
                     source = "mask" if mask is not None else "bbox"
-                    print(f"  [depth] {label}: depth={d:.3f}m, distance={dist:.3f}m, source={source}, bbox_size=({bbox_w}x{bbox_h}), valid_pixels={valid_count}")
+                    print(f"  [depth] {mapped_lbl}: depth={d:.3f}m, distance={dist:.3f}m, source={source}, bbox_size=({bbox_w}x{bbox_h}), valid_pixels={valid_count}")
 
             if frame_candidates:
                 break
@@ -1303,12 +1399,13 @@ def _detect_observations(
                     for det_idx, (box, score, label_id, yolo_track_id) in enumerate(zip(xyxy, confs, clss, ids)):
                         x1, y1, x2, y2 = [int(v) for v in box]
                         label = str(names.get(int(label_id), f"obj_{int(label_id)}"))
-                        label_key = label.strip().lower()
+                        mapped_lbl = map_label(label)
+                        label_key = mapped_lbl.strip().lower()
                         mask = masks_data[det_idx] if masks_data is not None and det_idx < len(masks_data) else None
 
                         if label_key not in COMMON_OBJECT_LABELS:
                             continue
-                        if label_allowlist and label not in label_allowlist:
+                        if label_allowlist and mapped_lbl not in label_allowlist:
                             metadata["rejection_reasons"]["unallowed_class"] += 1
                             continue
                         if float(score) < rescue_conf:
@@ -1331,16 +1428,86 @@ def _detect_observations(
                         frame_candidates.append(
                             ObjectObservation(
                                 frame_index=frame_idx,
-                                label=label,
+                                label=mapped_lbl,
                                 score=float(score),
                                 track_id=int(yolo_track_id) if int(yolo_track_id) >= 0 else None,
                                 bbox_xyxy=refined_bbox,
                                 position_world=p_world.astype(np.float32),
                                 distance_m=dist,
                                 placement_quality=placement_quality,
+                                source="yolo"
                             )
                         )
                         common_kept_total += 1
+
+        # Run custom heuristic detector for the frame
+        heuristic_candidates = []
+        try:
+            custom_dets = detect_indoor_custom_objects(frame_bgr)
+        except Exception as e:
+            print(f"[objects] error running custom heuristic detector: {e}")
+            custom_dets = []
+
+        for det in custom_dets:
+            raw_lbl = det["label"]
+            mapped_lbl = map_label(raw_lbl)
+            score = det["confidence"]
+            x1, y1, x2, y2 = det["bbox_2d"]
+            
+            # Map raw detections in metadata
+            frame_detections.append({
+                "label": raw_lbl,
+                "confidence": float(score),
+                "bbox_2d": [x1, y1, x2, y2]
+            })
+            metadata["raw_detections_count"] += 1
+            metadata["raw_detections"].append({
+                "frame_index": int(frame_idx),
+                "label": raw_lbl,
+                "confidence": float(score),
+                "bbox_2d": [x1, y1, x2, y2]
+            })
+
+            # Check allowlist and score threshold
+            if label_allowlist and mapped_lbl not in label_allowlist:
+                metadata["rejection_reasons"]["unallowed_class"] += 1
+                continue
+            if float(score) < _label_threshold(mapped_lbl, float(score_threshold)):
+                metadata["rejection_reasons"]["low_confidence"] += 1
+                continue
+
+            # Compute depth & 3D position (without mask)
+            d, valid_count, refined_bbox, center_xy = _mask_depth_and_center(depth_map, (x1, y1, x2, y2), None)
+            placement_quality = "good"
+            if d <= 0.0 or not np.isfinite(d):
+                d = 1.5
+                placement_quality = "estimated"
+
+            u, v = center_xy
+            p_cam = pixel_to_camera_point(u, v, float(d), intrinsics)
+            p_world = camera_to_world(p_cam, pose)
+
+            cam_center = pose[:3, 3]
+            dist = float(np.linalg.norm(p_world - cam_center))
+
+            heuristic_candidates.append(
+                ObjectObservation(
+                    frame_index=frame_idx,
+                    label=mapped_lbl,
+                    score=float(score),
+                    track_id=None,
+                    bbox_xyxy=refined_bbox,
+                    position_world=p_world.astype(np.float32),
+                    distance_m=dist,
+                    placement_quality=placement_quality,
+                    source="heuristic",
+                )
+            )
+            label_key = mapped_lbl.strip().lower()
+            if label_key in COMMON_OBJECT_LABELS:
+                common_kept_total += 1
+
+        frame_candidates.extend(heuristic_candidates)
 
         if frame_candidates:
             for obs in sorted(frame_candidates, key=lambda o: o.score, reverse=True):

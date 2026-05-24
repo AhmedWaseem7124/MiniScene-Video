@@ -134,21 +134,44 @@ function App() {
           // Size: sensible defaults per label when unavailable
           const labelKey = (obj.label || '').toLowerCase();
           const DEFAULT_SIZES = {
-            chair: [0.65, 1.0, 0.65],
-            couch: [2.0, 0.9, 0.9],
-            sofa: [2.0, 0.9, 0.9],
-            'dining table': [1.6, 0.8, 0.85],
-            table: [1.2, 0.75, 0.75],
-            bed: [1.6, 0.6, 2.0],
-            person: [0.5, 1.7, 0.4],
-            tv: [1.2, 0.7, 0.1],
-            monitor: [0.55, 0.4, 0.1],
-            laptop: [0.4, 0.3, 0.25],
-            book: [0.25, 0.3, 0.03],
-            bottle: [0.1, 0.3, 0.1],
-            cup: [0.1, 0.12, 0.1],
-            plant: [0.5, 1.0, 0.5],
+            chair: [0.6, 0.9, 0.6],
+            couch: [2.0, 0.9, 0.8],
+            sofa: [2.0, 0.9, 0.8],
+            'dining table': [1.2, 0.75, 0.8],
+            table: [1.2, 0.75, 0.8],
+            bed: [2.0, 0.6, 1.6],
+            person: [0.6, 1.7, 0.4],
+            tv: [1.2, 0.8, 0.1],
+            laptop: [0.4, 0.25, 0.3],
+            'potted plant': [0.5, 1.2, 0.5],
+            refrigerator: [0.8, 1.8, 0.8],
+            microwave: [0.5, 0.3, 0.4],
+            oven: [0.6, 0.85, 0.6],
+            sink: [0.6, 0.4, 0.5],
+            vase: [0.3, 0.5, 0.3],
+            book: [0.2, 0.05, 0.25],
+            clock: [0.3, 0.3, 0.1],
+            rug: [2.0, 0.03, 1.5],
+            carpet: [2.0, 0.03, 1.5],
+            painting: [1.2, 0.8, 0.05],
+            'wall art': [1.2, 0.8, 0.05],
+            mirror: [0.8, 1.2, 0.05],
+            plant: [0.5, 1.2, 0.5],
             lamp: [0.4, 1.5, 0.4],
+            light: [0.4, 1.5, 0.4],
+            curtain: [1.5, 2.0, 0.05],
+            cupboard: [1.2, 2.0, 0.5],
+            wardrobe: [1.5, 2.2, 0.6],
+            cabinet: [1.0, 1.2, 0.4],
+            shelf: [1.2, 1.8, 0.3],
+            pillow: [0.5, 0.2, 0.35],
+            blanket: [1.5, 0.05, 1.2],
+            door: [0.9, 2.1, 0.05],
+            window: [1.2, 1.0, 0.05],
+            bench: [1.2, 0.45, 0.4],
+            keyboard: [0.45, 0.03, 0.15],
+            mouse: [0.1, 0.04, 0.06],
+            remote: [0.2, 0.03, 0.05],
           };
           const size = obj.size_m || obj.box_3d?.size || obj.dimensions || DEFAULT_SIZES[labelKey] || [0.8, 0.8, 0.8];
 
@@ -396,7 +419,16 @@ function App() {
               <AnimatePresence>
                 {objects.map(obj => {
                   const emoji = FURNITURE_EMOJIS[obj.label] ||
-                    { person: '🧍', tv: '📺', monitor: '🖥️', laptop: '💻', bottle: '🍶', cup: '☕', book: '📖', lamp: '💡' }[obj.label?.toLowerCase()] ||
+                    {
+                      person: '🧍', tv: '📺', monitor: '🖥️', laptop: '💻', bottle: '🍶',
+                      cup: '☕', book: '📖', lamp: '💡', light: '💡', rug: '🟪', carpet: '🟪',
+                      mirror: '🪞', painting: '🖼️', 'wall art': '🖼️', curtain: '🎪',
+                      shelf: '📚', cupboard: '🚪', wardrobe: '🚪', cabinet: '🚪',
+                      refrigerator: '🧊', microwave: '📻', oven: '🔥', sink: '🚰',
+                      vase: '🏺', clock: '🕰️', window: '🪟', door: '🚪', chair: '🪑',
+                      couch: '🛋️', sofa: '🛋️', bench: '🛋️', table: '🪵', 'dining table': '🪵',
+                      bed: '🛏️', plant: '🌿', 'potted plant': '🌿', pillow: '🛌', blanket: '🛌'
+                    }[obj.label?.toLowerCase()] ||
                     '📦';
                   return (
                     <motion.div
