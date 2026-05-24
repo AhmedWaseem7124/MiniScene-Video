@@ -307,23 +307,23 @@ CLASS_SCORE_THRESHOLDS = {
 
 
 DEFAULT_SIZES = {
-    "chair": (0.6, 0.6, 0.8),
-    "couch": (1.8, 0.9, 0.8),
-    "sofa": (1.8, 0.9, 0.8),
-    "bed": (2.0, 1.5, 0.6),
-    "dining table": (1.6, 0.9, 0.75),
-    "table": (1.2, 0.8, 0.5),
-    "tv": (1.0, 0.2, 0.6),
-    "laptop": (0.4, 0.3, 0.25),
-    "potted plant": (0.5, 0.5, 0.8),
-    "refrigerator": (0.8, 0.8, 1.8),
-    "microwave": (0.5, 0.4, 0.3),
-    "oven": (0.6, 0.6, 0.85),
-    "sink": (0.6, 0.5, 0.4),
-    "vase": (0.3, 0.3, 0.5),
-    "book": (0.2, 0.25, 0.05),
-    "clock": (0.3, 0.1, 0.3),
-    "person": (0.6, 0.4, 1.7),
+    "chair": (0.6, 0.9, 0.6),
+    "couch": (2.0, 0.9, 0.8),
+    "sofa": (2.0, 0.9, 0.8),
+    "bed": (2.0, 0.6, 1.6),
+    "dining table": (1.2, 0.75, 0.8),
+    "table": (1.2, 0.75, 0.8),
+    "tv": (1.2, 0.8, 0.1),
+    "laptop": (0.4, 0.25, 0.3),
+    "potted plant": (0.5, 1.2, 0.5),
+    "refrigerator": (0.8, 1.8, 0.8),
+    "microwave": (0.5, 0.3, 0.4),
+    "oven": (0.6, 0.85, 0.6),
+    "sink": (0.6, 0.4, 0.5),
+    "vase": (0.3, 0.5, 0.3),
+    "book": (0.2, 0.05, 0.25),
+    "clock": (0.3, 0.3, 0.1),
+    "person": (0.6, 1.7, 0.4),
 }
 
 
@@ -443,29 +443,95 @@ def detect_scene_entities_3d(
         tracks = _prune_tracks_by_label_limit(tracks, max_instances_by_label)
         objects = _prune_objects_by_label_limit(objects, tracks, max_instances_by_label)
 
-    # Find untracked observations that were not successfully grouped into tracked objects
-    tracked_obs_keys = set()
-    for t in tracks:
-        for s in t.samples:
-            if s.bbox_xyxy is not None:
-                tracked_obs_keys.add((int(s.frame_index), tuple(int(v) for v in s.bbox_xyxy), str(t.label)))
+    # 1. Determine which observations are already placed/represented in objects
+    placed_obs_keys = set()
+    for obj in objects:
+        if obj.representative_frame_index is not None and obj.representative_bbox_xyxy is not None:
+            placed_obs_keys.add((int(obj.representative_frame_index), tuple(int(v) for v in obj.representative_bbox_xyxy), obj.label.strip().lower()))
 
-    untracked_observations = []
+    # 2. Identify unplaced observations
+    unplaced_observations = []
     for obs in observations:
-        key = (int(obs.frame_index), tuple(int(v) for v in obs.bbox_xyxy), str(obs.label))
-        if key not in tracked_obs_keys:
-            untracked_observations.append(obs)
+        key = (int(obs.frame_index), tuple(int(v) for v in obs.bbox_xyxy), obs.label.strip().lower())
+        if key in placed_obs_keys:
+            continue
+        
+        # Also check if any existing object of the same label is within 1.2m
+        covered_by_proximity = False
+        for obj in objects:
+            if obj.label.strip().lower() == obs.label.strip().lower():
+                if np.linalg.norm(obj.position_world - obs.position_world) < 1.2:
+                    covered_by_proximity = True
+                    break
+        if not covered_by_proximity:
+            unplaced_observations.append(obs)
 
-    # Convert untracked observations to fallback objects with placement_quality: "estimated"
+    # 3. Estimate proxy room bounds from camera positions
+    if poses_world_from_cam:
+        cam_centers = np.array([p[:3, 3] for p in poses_world_from_cam])
+        pc_min = np.min(cam_centers, axis=0) - 3.0
+        pc_max = np.max(cam_centers, axis=0) + 3.0
+    else:
+        pc_min = np.array([-3.0, -2.0, -3.0])
+        pc_max = np.array([3.0, 2.0, 3.0])
+    
+    room_w = float(pc_max[0] - pc_min[0])
+    room_d = float(pc_max[2] - pc_min[2])
+    
+    img_h, img_w = 480, 640
+    if frames_bgr:
+        img_h, img_w = frames_bgr[0].shape[:2]
+
+    # 4. Convert unplaced observations to fallback objects, clamping and estimating positions
     fallback_objects = []
-    for idx, obs in enumerate(untracked_observations, start=1):
+    rejection_report = {
+        "low_confidence": 0,
+        "unallowed_class": 0,
+        "duplicate": 0,
+        "invalid_bbox": 0,
+        "missing_depth": 0
+    }
+    
+    final_objects = list(objects)
+    
+    for idx, obs in enumerate(unplaced_observations, start=1):
         lbl_lower = obs.label.strip().lower()
         size = DEFAULT_SIZES.get(lbl_lower, (0.5, 0.5, 0.5))
         
+        # simple room-bounds fallback position
+        x1, y1, x2, y2 = obs.bbox_xyxy
+        cx_norm = ((x1 + x2) / 2.0) / max(1, img_w)
+        cy_norm = ((y1 + y2) / 2.0) / max(1, img_h)
+        
+        world_x = float(pc_min[0]) + cx_norm * room_w
+        world_z = float(pc_min[2]) + cy_norm * room_d
+        
+        obj_h = size[1]  # Y is height axis
+        world_y = float(pc_min[1]) + obj_h / 2.0
+        
+        pos_est = np.array([world_x, world_y, world_z], dtype=np.float32)
+        pos_est = np.clip(pos_est, pc_min, pc_max)
+        
+        if obs.placement_quality == "estimated":
+            pos = pos_est
+        else:
+            pos = np.clip(obs.position_world.copy(), pc_min, pc_max)
+            
+        # Check duplicate
+        duplicate = False
+        for f_obj in final_objects:
+            if f_obj.label.strip().lower() == obs.label.strip().lower():
+                if np.linalg.norm(f_obj.position_world - pos) < 1.2:
+                    duplicate = True
+                    break
+        if duplicate:
+            rejection_report["duplicate"] += 1
+            continue
+            
         fallback_obj = SceneObject(
             object_id=f"estimated_{idx}",
             label=obs.label,
-            position_world=obs.position_world.copy(),
+            position_world=pos,
             distance_m=obs.distance_m,
             observations=1,
             size_m=size,
@@ -474,43 +540,49 @@ def detect_scene_entities_3d(
             representative_score=float(obs.score),
             placement_quality="estimated",
         )
-        fallback_objects.append(fallback_obj)
+        final_objects.append(fallback_obj)
 
-    # Merge nearby fallback objects of the same label
-    merged_fallbacks = []
-    for f_obj in fallback_objects:
-        match_idx = -1
-        best_d = 1.0  # merge radius
-        for idx, m in enumerate(merged_fallbacks):
-            if m.label != f_obj.label:
-                continue
-            d = float(np.linalg.norm(f_obj.position_world - m.position_world))
-            if d < best_d:
-                best_d = d
-                match_idx = idx
-        if match_idx == -1:
-            merged_fallbacks.append(f_obj)
+    # 5. Populate rejection report based on raw detections not written to final_objects
+    raw_dets = metadata.get("raw_detections", [])
+    placed_keys = set()
+    for obj in final_objects:
+        if obj.representative_frame_index is not None and obj.representative_bbox_xyxy is not None:
+            placed_keys.add((int(obj.representative_frame_index), tuple(int(v) for v in obj.representative_bbox_xyxy), obj.label.strip().lower()))
+            
+    for det in raw_dets:
+        det_label = det["label"]
+        det_label_lower = det_label.strip().lower()
+        det_conf = det["confidence"]
+        det_bbox = det["bbox_2d"]
+        det_frame = det["frame_index"]
+        
+        key = (int(det_frame), tuple(int(v) for v in det_bbox), det_label_lower)
+        if key in placed_keys:
+            continue
+            
+        if label_allowlist and det_label not in label_allowlist:
+            rejection_report["unallowed_class"] += 1
+        elif det_conf < _label_threshold(det_label, float(score_threshold)):
+            rejection_report["low_confidence"] += 1
+        elif len(det_bbox) != 4 or det_bbox[2] <= det_bbox[0] or det_bbox[3] <= det_bbox[1]:
+            rejection_report["invalid_bbox"] += 1
         else:
-            m = merged_fallbacks[match_idx]
-            w_old = m.observations
-            w_new = f_obj.observations
-            m.position_world = ((m.position_world * w_old) + (f_obj.position_world * w_new)) / float(w_old + w_new)
-            m.distance_m = float((m.distance_m * w_old + f_obj.distance_m * w_new) / float(w_old + w_new))
-            m.observations += w_new
-            if f_obj.representative_score > m.representative_score:
-                m.representative_score = f_obj.representative_score
-                m.representative_frame_index = f_obj.representative_frame_index
-                m.representative_bbox_xyxy = f_obj.representative_bbox_xyxy
+            rejection_report["duplicate"] += 1
+            
+    # 6. Re-index IDs to have label_index format as requested by user
+    label_counts = {}
+    for obj in final_objects:
+        lbl_clean = obj.label.strip().lower().replace(" ", "_")
+        label_counts[lbl_clean] = label_counts.get(lbl_clean, 0) + 1
+        obj.object_id = f"{lbl_clean}_{label_counts[lbl_clean]}"
 
-    # Reindex fallback IDs
-    for i, m in enumerate(merged_fallbacks, start=1):
-        m.object_id = f"estimated_{i}"
-
-    combined_objects = objects + merged_fallbacks
-    metadata["final_objects_count"] = len(combined_objects)
+    metadata["rejection_report"] = rejection_report
+    metadata["fallback_used"] = (len(final_objects) > len(objects)) or (len(final_objects) == 0 and metadata.get("raw_detections_count", 0) > 0)
+    metadata["fallback_reason"] = "Converted 2D YOLO detections to estimated 3D objects"
+    metadata["final_objects_count"] = len(final_objects)
     metadata["object_tracking_time"] += pytime.perf_counter() - t_track_start
 
-    return combined_objects, tracks, metadata
+    return final_objects, tracks, metadata
 
 
 def deduplicate_tracks_with_feature_matching(
@@ -907,7 +979,8 @@ def _detect_observations(
             "unallowed_class": 0
         },
         "object_detection_time": 0.0,
-        "object_tracking_time": 0.0
+        "object_tracking_time": 0.0,
+        "raw_detections": []
     }
 
     if not frames_bgr:
@@ -1007,6 +1080,13 @@ def _detect_observations(
                 })
 
             metadata["raw_detections_count"] += len(frame_detections)
+            for det in frame_detections:
+                metadata["raw_detections"].append({
+                    "frame_index": int(frame_idx),
+                    "label": det["label"],
+                    "confidence": det["confidence"],
+                    "bbox_2d": det["bbox_2d"]
+                })
 
             frame_candidates = []
             for det_idx, (box, score, label_id, yolo_track_id) in enumerate(zip(xyxy, confs, clss, ids)):
@@ -1109,6 +1189,13 @@ def _detect_observations(
                         })
 
                     metadata["raw_detections_count"] += len(frame_detections)
+                    for det in frame_detections:
+                        metadata["raw_detections"].append({
+                            "frame_index": int(frame_idx),
+                            "label": det["label"],
+                            "confidence": det["confidence"],
+                            "bbox_2d": det["bbox_2d"]
+                        })
 
                     for det_idx, (box, score, label_id, yolo_track_id) in enumerate(zip(xyxy, confs, clss, ids)):
                         x1, y1, x2, y2 = [int(v) for v in box]
@@ -1513,6 +1600,8 @@ def write_objects_json(
         object_payload.append({
             "id": obj.object_id,
             "label": obj.label,
+            "confidence": float(obj.representative_score) if obj.representative_score is not None else None,
+            "bbox_2d": list(obj.representative_bbox_xyxy) if obj.representative_bbox_xyxy is not None else None,
             "position_world": pos,
             "distance_m": float(obj.distance_m),
             "observations": int(obj.observations),
@@ -1555,6 +1644,8 @@ def write_objects_json(
         "tracks": track_payload,
     }
     if metadata is not None:
+        metadata["reason"] = metadata.get("fallback_reason") or "Converted 2D YOLO detections to estimated 3D objects"
+        metadata["fallback_used"] = metadata.get("fallback_used", False)
         payload["metadata"] = metadata
     else:
         payload["metadata"] = {
@@ -1562,6 +1653,8 @@ def write_objects_json(
             "frames_scanned": 0,
             "raw_detections_count": len(object_payload),
             "final_objects_count": len(object_payload),
+            "fallback_used": False,
+            "reason": "Converted 2D YOLO detections to estimated 3D objects",
             "rejection_reasons": {
                 "low_confidence": 0,
                 "unallowed_class": 0

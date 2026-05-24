@@ -5,6 +5,8 @@ import { X, Sliders } from 'lucide-react';
 export default function ViewSettings({
   settings,
   setSettings,
+  repairMode,
+  onToggleRepairMode,
   onClose,
   onAutoFit,
   onReset,
@@ -73,6 +75,7 @@ export default function ViewSettings({
         {/* Visual Debug */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
           <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Visual Debug</label>
+          <ToggleControl label="Repair Mode" checked={repairMode} onChange={onToggleRepairMode} />
           <ToggleControl label="Original Point Cloud" checked={settings.showOriginalPointCloud} onChange={(v) => handleChange('showOriginalPointCloud', v)} />
           <ToggleControl label="Repair Points" checked={settings.showRepairPoints} onChange={(v) => handleChange('showRepairPoints', v)} />
           <ToggleControl label="Edited Point Cloud" checked={settings.showEditedPointCloud} onChange={(v) => handleChange('showEditedPointCloud', v)} />

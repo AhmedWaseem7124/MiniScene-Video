@@ -31,7 +31,7 @@ class ErrorBoundary extends React.Component {
 
 // ─── Point Cloud ───────────────────────────────────────────────────────────
 
-function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpdate, pointCloudUrl, onLoad }) {
+function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpdate, pointCloudUrl, onLoad, isSceneVisible }) {
   const [geometry, setGeometry] = useState(null);
   const [status, setStatus] = useState('Loading point cloud...');
 
@@ -53,8 +53,25 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
           const loader = new PLYLoader();
           const parsed = loader.parse(buffer);
           if (!parsed.attributes.position || parsed.attributes.position.count === 0) throw new Error('0 vertices');
+          
+          parsed.computeBoundingBox();
+          const bbox = parsed.boundingBox;
+          const count = parsed.attributes.position.count;
+          
+          console.log("Geometry vertices:", count);
+          console.log("PointCloud: geometry loaded");
+          
           setGeometry(parsed);
-          setStatus(`Loaded: ${parsed.attributes.position.count} vertices`);
+          setStatus(`Loaded: ${count} vertices`);
+          
+          if (count > 0 && onLoad) {
+            const center = new THREE.Vector3();
+            const size = new THREE.Vector3();
+            bbox.getCenter(center);
+            bbox.getSize(size);
+            onLoad({ center, size, count, min: bbox.min, max: bbox.max });
+            console.log("PointCloud: onLoad fired");
+          }
         } catch {
           // ASCII fallback
           const text = new TextDecoder().decode(buffer);
@@ -84,8 +101,25 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
           const geom = new THREE.BufferGeometry();
           geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
           if (hasColors) geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+          
+          geom.computeBoundingBox();
+          const bbox = geom.boundingBox;
+          const count = vertexCount;
+          
+          console.log("Geometry vertices:", count);
+          console.log("PointCloud: geometry loaded (fallback)");
+          
           setGeometry(geom);
           setStatus(`Loaded (fallback): ${vertexCount} vertices`);
+          
+          if (count > 0 && onLoad) {
+            const center = new THREE.Vector3();
+            const size = new THREE.Vector3();
+            bbox.getCenter(center);
+            bbox.getSize(size);
+            onLoad({ center, size, count, min: bbox.min, max: bbox.max });
+            console.log("PointCloud: onLoad fired");
+          }
         }
       })
       .catch(err => { if (active) setStatus(`Error: ${err.message}`); });
@@ -95,26 +129,26 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
 
   const { processedGeom, analytics } = useMemo(() => {
     if (!geometry) return { processedGeom: null, analytics: null };
+    
+    // Bypass repair processing entirely on initial load, or if repair is explicitly disabled and no objects are deleted
+    const shouldRunRepair = isSceneVisible && (repairMode === true || repairMode === 'visualize' || repairMode === 'original' || (removedObjects && removedObjects.length > 0));
+    
+    if (!shouldRunRepair) {
+      return { processedGeom: geometry, analytics: null };
+    }
+    
     return processPointCloud(geometry, removedObjects, repairMode, settings);
-  }, [geometry, removedObjects, repairMode, settings]);
+  }, [geometry, removedObjects, repairMode, settings, isSceneVisible]);
 
   useEffect(() => {
     if (analytics && onRepairAnalyticsUpdate) onRepairAnalyticsUpdate(analytics);
   }, [analytics, onRepairAnalyticsUpdate]);
 
   useEffect(() => {
-    if (!processedGeom) return;
-    processedGeom.computeBoundingBox();
-    const bbox = processedGeom.boundingBox;
-    const count = processedGeom.attributes.position.count;
-    if (count > 0 && onLoad) {
-      const center = new THREE.Vector3();
-      const size = new THREE.Vector3();
-      bbox.getCenter(center);
-      bbox.getSize(size);
-      onLoad({ center, size, count, min: bbox.min, max: bbox.max });
+    if (processedGeom) {
+      console.log("PointCloud: geometry rendered");
     }
-  }, [processedGeom, onLoad]);
+  }, [processedGeom]);
 
   const material = useMemo(() => {
     const hasColors = processedGeom?.hasAttribute('color');
@@ -446,6 +480,7 @@ export default function Scene({
   onTransformModeChange,
   onDeleteSelected,
   onPointCloudLoad,
+  isSceneVisible,
 }) {
   const [pcStats, setPcStats] = useState(null);
   const [sceneTransform, setSceneTransform] = useState({ position: [0, 0, 0], scale: [1, 1, 1] });
@@ -489,6 +524,7 @@ export default function Scene({
               onRepairAnalyticsUpdate={onRepairAnalyticsUpdate}
               pointCloudUrl={pointCloudUrl}
               onLoad={handlePointCloudLoad}
+              isSceneVisible={isSceneVisible}
             />
           </ErrorBoundary>
         </Suspense>

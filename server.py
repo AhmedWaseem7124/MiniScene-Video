@@ -327,6 +327,11 @@ def process_video():
         all_stdout_lines = []
         last_line_time = time.perf_counter()
 
+        ply_file = os.path.join(session_dir, 'point_cloud.ply')
+        obj_file = os.path.join(session_dir, 'objects_3d.json')
+        extract_objects = (mode in ("minimal", "fast", "quality"))
+        returned_early = False
+
         while True:
             retcode = p.poll()
             try:
@@ -335,6 +340,25 @@ def process_video():
             except queue.Empty:
                 if retcode is not None:
                     break
+                # Check early return condition
+                if not returned_early:
+                    ply_exists = os.path.exists(ply_file) and os.path.getsize(ply_file) > 0
+                    obj_exists = not extract_objects or (os.path.exists(obj_file) and os.path.getsize(obj_file) > 0)
+                    if ply_exists and obj_exists:
+                        print("[server] Core files generated! Returning early to frontend.")
+                        returned_early = True
+                        
+                        def wait_finish_bg(proc, q_thread):
+                            while proc.poll() is None:
+                                try:
+                                    q_thread.get(timeout=0.5)
+                                except queue.Empty:
+                                    pass
+                            proc.wait()
+                            print(f"[server] Background CLI process finished with code {proc.returncode}")
+                            
+                        threading.Thread(target=wait_finish_bg, args=(p, q), daemon=True).start()
+                        break
                 if time.perf_counter() - last_line_time > 60.0:
                     print(f"No progress for 60s — possible bottleneck at {current_stage}")
                     last_line_time = time.perf_counter()
@@ -372,8 +396,32 @@ def process_video():
                     except ValueError:
                         pass
 
-        p.wait()
-        returncode = p.returncode
+            # Check early return condition after processing a line
+            if not returned_early:
+                ply_exists = os.path.exists(ply_file) and os.path.getsize(ply_file) > 0
+                obj_exists = not extract_objects or (os.path.exists(obj_file) and os.path.getsize(obj_file) > 0)
+                if ply_exists and obj_exists:
+                    print("[server] Core files generated! Returning early to frontend.")
+                    returned_early = True
+                    
+                    def wait_finish_bg(proc, q_thread):
+                        while proc.poll() is None:
+                            try:
+                                q_thread.get(timeout=0.5)
+                            except queue.Empty:
+                                pass
+                        proc.wait()
+                        print(f"[server] Background CLI process finished with code {proc.returncode}")
+                        
+                    threading.Thread(target=wait_finish_bg, args=(p, q), daemon=True).start()
+                    break
+
+        if not returned_early:
+            p.wait()
+            returncode = p.returncode
+        else:
+            returncode = 0
+            
         print(f"CLI return code: {returncode}")
 
         result = SimpleResult(

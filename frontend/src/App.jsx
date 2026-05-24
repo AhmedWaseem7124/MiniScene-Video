@@ -59,10 +59,15 @@ function App() {
   const [walkableAnalytics, setWalkableAnalytics] = useState(null);
   const [placementItem, setPlacementItem] = useState(null);
   const [removedObjects, setRemovedObjects] = useState([]);
+  const [repairMode, setRepairMode] = useState(false);
 
   // Video / processing
   const [showVideoUpload, setShowVideoUpload] = useState(false);
   const [processState, setProcessState] = useState('IDLE');
+
+  useEffect(() => {
+    console.log("App: processState changed to:", processState);
+  }, [processState]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const isProcessing = ['UPLOADING', 'PROCESSING', 'LOADING_SCENE'].includes(processState);
   const [processingStage, setProcessingStage] = useState('upload');
@@ -165,10 +170,18 @@ function App() {
   }, [objectsUrl]);
 
   const handleDeleteObject = useCallback((id) => {
+    const deletedObj = objects.find(o => o.id === id);
+    if (deletedObj) {
+      setRemovedObjects(prev => {
+        const updated = [...prev, deletedObj];
+        console.log("Object deleted and tracked for repair:", deletedObj.label);
+        return updated;
+      });
+    }
     setObjects(prev => prev.filter(o => o.id !== id));
     setPlacedItems(prev => prev.filter(p => p.id !== id));
     if (selectedId === id) setSelectedId(null);
-  }, [selectedId]);
+  }, [objects, selectedId]);
 
   const handleDuplicatePlaced = useCallback((item) => {
     if (objects.find(o => o.id === item.id)) return;
@@ -539,7 +552,7 @@ function App() {
             cvStage={1}
             cvFrame={0}
             removedObjects={removedObjects}
-            repairMode="original"
+            repairMode={repairMode}
             showRepairPanel={false}
             onRepairAnalyticsUpdate={() => {}}
             pointCloudUrl={pointCloudUrl}
@@ -548,6 +561,7 @@ function App() {
             onTransformModeChange={setTransformMode}
             onDeleteSelected={handleDeleteObject}
             onPointCloudLoad={handlePointCloudLoad}
+            isSceneVisible={processState === 'READY'}
           />
         )}
 
@@ -664,9 +678,14 @@ function App() {
           <ViewSettings
             settings={viewSettings}
             setSettings={setViewSettings}
+            repairMode={repairMode}
+            onToggleRepairMode={() => setRepairMode(r => !r)}
             onClose={() => setShowViewSettings(false)}
             onAutoFit={() => setViewSettings(s => ({ ...s, roomScale: 1, floorHeight: -2 }))}
-            onReset={() => setViewSettings({ viewMode: 'hybrid', pointSize: 0.015, pointOpacity: 0.85, wallOpacity: 0.5, floorHeight: -2, roomScale: 1, showGrid: false, showWalls: true, showCeiling: false })}
+            onReset={() => {
+              setViewSettings({ viewMode: 'hybrid', pointSize: 0.015, pointOpacity: 0.85, wallOpacity: 0.5, floorHeight: -2, roomScale: 1, showGrid: false, showWalls: true, showCeiling: false });
+              setRepairMode(false);
+            }}
             onResetCache={() => { setRemovedObjects([]); }}
           />
         )}

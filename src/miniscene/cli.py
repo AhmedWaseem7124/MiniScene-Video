@@ -299,10 +299,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
         effective_max_frames = 5
         resize_side = 320
         effective_depth_mode = "heuristic"
-        extract_objects = False
+        extract_objects = True
         effective_sample_step = 16
         orb_max_features = 0
-        max_detect_keyframes = 0
+        max_detect_keyframes = 1
         disable_tracking = True
         disable_object_feature_dedup = True
     elif args.mode == "ultra_fast":
@@ -529,120 +529,6 @@ def run_pipeline(args: argparse.Namespace) -> None:
             out_dir=out_dir,
         )
 
-        # ── Raw-detection fallback ─────────────────────────────────────────────
-        # If the pipeline produced zero objects but raw_detections.json has hits,
-        # convert each 2D YOLO detection into an estimated 3D object using simple
-        # image-space geometry.  This guarantees the frontend always gets something
-        # to display when YOLO can see objects.
-        if len(objects) == 0 and metadata.get("raw_detections_count", 0) > 0:
-            print("[objects] No 3D objects from pipeline — converting raw 2D detections to estimated objects.")
-            raw_json_path = out_dir / "raw_detections.json"
-            raw_data = {}
-            if raw_json_path.exists():
-                try:
-                    raw_data = _json.loads(raw_json_path.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-            from miniscene.cv.objects import SceneObject, DEFAULT_SIZES
-
-            # Estimate a simple room bounding box from the point cloud for clamping.
-            if recon.points_world is not None and len(recon.points_world) > 0:
-                finite_pts = recon.points_world[np.all(np.isfinite(recon.points_world), axis=1)]
-                if len(finite_pts) > 0:
-                    pc_min = np.min(finite_pts, axis=0)
-                    pc_max = np.max(finite_pts, axis=0)
-                else:
-                    pc_min = np.array([-3.0, -2.0, -3.0])
-                    pc_max = np.array([ 3.0,  2.0,  3.0])
-            else:
-                pc_min = np.array([-3.0, -2.0, -3.0])
-                pc_max = np.array([ 3.0,  2.0,  3.0])
-
-            ground_y_est = float(pc_min[1])
-            room_w = float(pc_max[0] - pc_min[0])  # x extent
-            room_d = float(pc_max[2] - pc_min[2])  # z extent
-
-            estimated_from_raw: list[SceneObject] = []
-            label_counts: dict[str, int] = {}
-            rejection_report: dict[str, int] = {
-                "low_confidence": 0, "duplicate": 0, "invalid_bbox": 0
-            }
-
-            for frame_data in raw_data.get("frames", []):
-                frame_name = frame_data.get("frame", "frame_000.jpg")
-                for det in frame_data.get("detections", []):
-                    label = str(det.get("label", "object")).strip().lower()
-                    conf = float(det.get("confidence", 0.0))
-                    bbox = det.get("bbox_2d", [])
-
-                    if conf < 0.10:
-                        rejection_report["low_confidence"] += 1
-                        continue
-                    if len(bbox) != 4:
-                        rejection_report["invalid_bbox"] += 1
-                        continue
-
-                    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
-                    if x2 <= x1 or y2 <= y1:
-                        rejection_report["invalid_bbox"] += 1
-                        continue
-
-                    # Estimate 3D position from image-space bbox center:
-                    # • x: normalized horizontal position mapped onto room width
-                    # • z: use fixed mid-depth (1.5m from camera), mapped to room depth
-                    # • y: floor level + half object height
-                    if frames:
-                        img_w = frames[0].shape[1]
-                        img_h = frames[0].shape[0]
-                    else:
-                        img_w, img_h = 480, 320
-
-                    cx_norm = ((x1 + x2) / 2.0) / max(1, img_w)  # 0..1
-                    cy_norm = ((y1 + y2) / 2.0) / max(1, img_h)  # 0..1
-
-                    # Map to room coordinates
-                    world_x = float(pc_min[0]) + cx_norm * room_w
-                    # depth (z): objects higher in frame → farther away
-                    world_z = float(pc_min[2]) + cy_norm * room_d
-
-                    size = DEFAULT_SIZES.get(label, (0.7, 0.8, 0.7))
-                    obj_h = size[2]  # height is index 2 in (w,d,h) convention
-                    world_y = ground_y_est + obj_h / 2.0
-
-                    pos = np.clip(
-                        np.array([world_x, world_y, world_z], dtype=np.float32),
-                        pc_min, pc_max
-                    )
-
-                    label_counts[label] = label_counts.get(label, 0) + 1
-                    obj_idx = label_counts[label]
-
-                    # Skip duplicates of same label beyond 3 per frame
-                    if obj_idx > 3:
-                        rejection_report["duplicate"] += 1
-                        continue
-
-                    estimated_from_raw.append(SceneObject(
-                        object_id=f"{label}_{obj_idx}",
-                        label=label,
-                        position_world=pos,
-                        distance_m=1.5,
-                        observations=1,
-                        size_m=size,
-                        representative_frame_index=None,
-                        representative_bbox_xyxy=(x1, y1, x2, y2),
-                        representative_score=conf,
-                        placement_quality="estimated",
-                    ))
-
-            objects = estimated_from_raw
-            metadata["fallback_used"] = True
-            metadata["fallback_reason"] = "Converted 2D YOLO detections to estimated 3D objects"
-            metadata["rejection_report"] = rejection_report
-            metadata["final_objects_count"] = len(objects)
-            print(f"[objects] Raw-detection fallback produced {len(objects)} estimated objects.")
-        # ── End raw-detection fallback ─────────────────────────────────────────
 
         if len(objects) > 0:
             ground_y = estimate_ground_plane(recon.points_world)
@@ -684,19 +570,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     t_start_file_writing = time.perf_counter()
     # Final outputs are written only after validation passes.
+    
+    # 1. Write core assets first (allows early response to server)
     write_ply(ply_path, recon.points_world, recon.colors_rgb)
-    write_trajectory_json(traj_path, poses, intrinsics)
-    write_interactive_html(html_path, recon.points_world, recon.colors_rgb)
-    save_depth_previews(depth_maps, out_dir / "depth_preview")
-
-    if args.open3d_mesh:
-        try:
-            pcd_o3d_path, mesh_o3d_path = write_open3d_mesh(out_dir, recon.points_world, recon.colors_rgb)
-            print(f"Wrote: {pcd_o3d_path}")
-            print(f"Wrote: {mesh_o3d_path}")
-        except Exception as ex:
-            print(f"Open3D mesh export skipped: {ex}")
-
+    
     if extract_objects:
         write_objects_json(objects_path, objects, tracks=tracks, ground_y=ground_y, metadata=metadata)
         objects_file_name = objects_path.name
@@ -726,6 +603,19 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 "message": "Object detection skipped in this mode"
             }, f, indent=2)
         print(f"Wrote empty objects file: {objects_path}")
+
+    # 2. Write auxiliary files afterwards
+    write_trajectory_json(traj_path, poses, intrinsics)
+    write_interactive_html(html_path, recon.points_world, recon.colors_rgb)
+    save_depth_previews(depth_maps, out_dir / "depth_preview")
+
+    if args.open3d_mesh:
+        try:
+            pcd_o3d_path, mesh_o3d_path = write_open3d_mesh(out_dir, recon.points_world, recon.colors_rgb)
+            print(f"Wrote: {pcd_o3d_path}")
+            print(f"Wrote: {mesh_o3d_path}")
+        except Exception as ex:
+            print(f"Open3D mesh export skipped: {ex}")
 
     if args.immersive_viewer:
         immersive_path = out_dir / "scene_immersive.html"
