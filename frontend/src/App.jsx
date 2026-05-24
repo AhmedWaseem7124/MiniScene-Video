@@ -94,6 +94,7 @@ function App() {
     showOriginalPointCloud: true,
     showRepairPoints: false,
     showEditedPointCloud: false,
+    showObjectDebug: false,
   });
 
   // Clear old cache on load
@@ -683,7 +684,7 @@ function App() {
             onClose={() => setShowViewSettings(false)}
             onAutoFit={() => setViewSettings(s => ({ ...s, roomScale: 1, floorHeight: -2 }))}
             onReset={() => {
-              setViewSettings({ viewMode: 'hybrid', pointSize: 0.015, pointOpacity: 0.85, wallOpacity: 0.5, floorHeight: -2, roomScale: 1, showGrid: false, showWalls: true, showCeiling: false });
+              setViewSettings({ viewMode: 'hybrid', pointSize: 0.015, pointOpacity: 0.85, wallOpacity: 0.5, floorHeight: -2, roomScale: 1, showGrid: false, showWalls: true, showCeiling: false, showOriginalPointCloud: true, showRepairPoints: false, showEditedPointCloud: false, showObjectDebug: false });
               setRepairMode(false);
             }}
             onResetCache={() => { setRemovedObjects([]); }}

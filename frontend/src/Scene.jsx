@@ -210,7 +210,7 @@ function DetectedPlaceholderModel({ label, size }) {
 
 // ─── Detected Bounding Box ─────────────────────────────────────────────────
 
-function DetectedBoundingBox({ object, selected, onClick }) {
+function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
   const [x, y, z] = object.box_3d.center;
   const [w, h, d] = object.box_3d.size;
   const [hovered, setHovered] = useState(false);
@@ -220,9 +220,6 @@ function DetectedBoundingBox({ object, selected, onClick }) {
   const conf  = typeof object.confidence === 'number' ? object.confidence : 0;
   const confPct = Math.round(conf * 100);
 
-  // Flip Y because the point cloud is rendered with Y-flipped rotation
-  const pos = [x, -y, -z];
-  
   const isEstimated = object.placement_quality === 'estimated';
   const boxColor = selected 
     ? '#6366f1' 
@@ -236,6 +233,14 @@ function DetectedBoundingBox({ object, selected, onClick }) {
       lineRef.current.computeLineDistances();
     }
   }, [w, h, d]);
+
+  // Object base approach:
+  // group position is set to the base of the object: base_position
+  const pos = object.box_3d.base_position || [x, viewSettings?.floorHeight || -2, z];
+
+  // For debug output:
+  const [x_scene, y_scene, z_scene] = object.converted_center || [x, -y, -z];
+  const floorY = viewSettings?.floorHeight || -2;
 
   return (
     <group position={pos}>
@@ -291,7 +296,7 @@ function DetectedBoundingBox({ object, selected, onClick }) {
             ? 'rgba(99,102,241,0.92)' 
             : (isEstimated ? 'rgba(244,63,94,0.85)' : 'rgba(6,182,212,0.88)'),
           color: 'white',
-          padding: '3px 8px',
+          padding: '4px 10px',
           borderRadius: 6,
           fontSize: 11,
           fontFamily: "'Outfit', sans-serif",
@@ -302,17 +307,28 @@ function DetectedBoundingBox({ object, selected, onClick }) {
             ? 'rgba(165,180,252,0.5)' 
             : (isEstimated ? 'rgba(251,113,133,0.4)' : 'rgba(103,232,249,0.4)')}`,
         }}>
-          {label}
-          {isEstimated ? (
-            <span style={{ marginLeft: 5, background: 'rgba(0,0,0,0.25)', padding: '2px 5px', borderRadius: 4, fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Estimated
-            </span>
-          ) : (
-            confPct > 0 && (
-              <span style={{ marginLeft: 5, fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
-                {confPct}%
+          <div>
+            {label}
+            {isEstimated ? (
+              <span style={{ marginLeft: 5, background: 'rgba(0,0,0,0.25)', padding: '2px 5px', borderRadius: 4, fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Estimated
               </span>
-            )
+            ) : (
+              confPct > 0 && (
+                <span style={{ marginLeft: 5, fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
+                  {confPct}%
+                </span>
+              )
+            )}
+          </div>
+          {viewSettings?.showObjectDebug && (
+            <div style={{ marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.2)', fontSize: '0.7rem', fontWeight: 400, textAlign: 'left', lineHeight: '1.2' }}>
+              <div>Raw backend: [{object.raw_center?.map(n => n.toFixed(2)).join(', ')}]</div>
+              <div>Conv scene: [{x_scene.toFixed(2)}, {y_scene.toFixed(2)}, {z_scene.toFixed(2)}]</div>
+              <div>Floor H: {floorY.toFixed(2)}</div>
+              <div>Size: [{w.toFixed(2)}, {h.toFixed(2)}, {d.toFixed(2)}]</div>
+              <div>Final render: [{pos.map(n => n.toFixed(2)).join(', ')}]</div>
+            </div>
           )}
         </div>
       </Html>
@@ -485,6 +501,85 @@ export default function Scene({
   const [pcStats, setPcStats] = useState(null);
   const [sceneTransform, setSceneTransform] = useState({ position: [0, 0, 0], scale: [1, 1, 1] });
 
+  const alignedObjects = useMemo(() => {
+    return objects.map(obj => {
+      // 1. Convert coordinates (flip Y and Z due to point cloud rotation)
+      const [rawX, rawY, rawZ] = obj.box_3d?.center || [0, 0, 0];
+      const [w, h, d] = obj.box_3d?.size || [1, 1, 1];
+
+      let x_scene = rawX;
+      let y_scene = -rawY;
+      let z_scene = -rawZ;
+
+      // Fallback 2D mapping for estimated objects to avoid wall/ceiling clustering
+      const isEstimated = obj.placement_quality === 'estimated';
+      if (isEstimated && obj.bbox_2d && pcStats) {
+        let maxX2d = 640;
+        let maxY2d = 480;
+        objects.forEach(o => {
+          if (o.bbox_2d) {
+            const [,, xmax, ymax] = o.bbox_2d;
+            if (xmax > maxX2d) maxX2d = xmax;
+            if (ymax > maxY2d) maxY2d = ymax;
+          }
+        });
+
+        const [xmin, ymin, xmax, ymax] = obj.bbox_2d;
+        const imgX = (xmin + xmax) / 2;
+        const imgY = ymax;
+
+        const normX = imgX / maxX2d;
+        const normZ = imgY / maxY2d;
+
+        let minX = -5, maxX = 5, minZ = -5, maxZ = 5;
+        if (pcStats.min && pcStats.max) {
+          minX = pcStats.min.x;
+          maxX = pcStats.max.x;
+          const z1 = -pcStats.min.z;
+          const z2 = -pcStats.max.z;
+          minZ = Math.min(z1, z2);
+          maxZ = Math.max(z1, z2);
+        }
+
+        const roomWidth = maxX - minX;
+        const roomDepth = maxZ - minZ;
+
+        x_scene = minX + normX * roomWidth;
+        z_scene = minZ + normZ * roomDepth;
+      }
+
+      // Clamp to room bounds
+      let minX = -5, maxX = 5, minZ = -5, maxZ = 5;
+      if (pcStats && pcStats.min && pcStats.max) {
+        minX = pcStats.min.x;
+        maxX = pcStats.max.x;
+        const z1 = -pcStats.min.z;
+        const z2 = -pcStats.max.z;
+        minZ = Math.min(z1, z2);
+        maxZ = Math.max(z1, z2);
+      }
+      const margin = 0.2;
+      const clampedX = Math.max(minX + margin, Math.min(maxX - margin, x_scene));
+      const clampedZ = Math.max(minZ + margin, Math.min(maxZ - margin, z_scene));
+
+      // Snap to floorHeight
+      const floorY = viewSettings.floorHeight || -2;
+      const finalPos = [clampedX, floorY, clampedZ];
+
+      return {
+        ...obj,
+        raw_center: [rawX, rawY, rawZ],
+        converted_center: [x_scene, y_scene, z_scene],
+        box_3d: {
+          ...obj.box_3d,
+          center: [clampedX, floorY + h / 2, clampedZ],
+          base_position: finalPos,
+          size: [w, h, d],
+        }
+      };
+    });
+  }, [objects, pcStats, viewSettings.floorHeight]);
+
   const handlePointCloudLoad = useCallback((stats) => {
     setPcStats(stats);
     const maxDim = Math.max(stats.size.x, stats.size.y, stats.size.z);
@@ -545,29 +640,29 @@ export default function Scene({
         {showWalkablePanel && (
           <WalkableOverlay
             settings={viewSettings}
-            objects={objects}
+            objects={alignedObjects}
             placedItems={placedItems}
             onUpdateAnalytics={onWalkableAnalyticsUpdate}
           />
         )}
 
-        <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={objects} placedItems={placedItems} />
-        <MeasurementOverlay objects={objects} placedItems={placedItems} settings={viewSettings} visible={showMeasurements} />
+        <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={alignedObjects} placedItems={placedItems} />
+        <MeasurementOverlay objects={alignedObjects} placedItems={placedItems} settings={viewSettings} visible={showMeasurements} />
 
         {showAssistantPanel && (
-          <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={objects} placedItems={placedItems} />
+          <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={alignedObjects} placedItems={placedItems} />
         )}
 
         {showGraphPanel && (
-          <GraphOverlay objects={objects} placedItems={placedItems} settings={viewSettings} hoverSource={activeGraphSource} hoverTarget={activeGraphTarget} />
+          <GraphOverlay objects={alignedObjects} placedItems={placedItems} settings={viewSettings} hoverSource={activeGraphSource} hoverTarget={activeGraphTarget} />
         )}
 
         {showCVPanel && (
           <CVOverlay settings={viewSettings} pipelineStage={cvStage} currentFrame={cvFrame} />
         )}
 
-        {objects.map(obj => (
-          <DetectedBoundingBox key={obj.id} object={obj} selected={selectedId === obj.id} onClick={onSelect} />
+        {alignedObjects.map(obj => (
+          <DetectedBoundingBox key={obj.id} object={obj} selected={selectedId === obj.id} onClick={onSelect} viewSettings={viewSettings} />
         ))}
 
         {placedItems.map(item => (
