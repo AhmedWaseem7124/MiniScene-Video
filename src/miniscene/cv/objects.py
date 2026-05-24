@@ -42,6 +42,14 @@ class SceneObject:
     source_frames: list[str] | None = None
     merged_from: list[str] | None = None
     source: str = "yolo"
+    rotation_y: float = 0.0
+    facing_direction: list[float] | None = None
+    placement_reason: str = "estimated_from_detection"
+    placement_confidence: float = 0.5
+    base_position: list[float] | None = None
+    placement_category: str = "floor"
+
+
 
 
 @dataclass
@@ -980,6 +988,323 @@ def align_objects_to_ground(objects: list[SceneObject], ground_y: float, object_
     return objects
 
 
+def refine_object_placements(
+    objects: list[SceneObject],
+    ground_y: float,
+    points_world: np.ndarray,
+    poses_world_from_cam: list[np.ndarray] | None = None,
+    depth_maps: list[np.ndarray] | None = None,
+    intrinsics: CameraIntrinsics | None = None,
+) -> list[SceneObject]:
+    """
+    Refine object 3D positions, snap to walls/floor, spread estimated objects,
+    and estimate realistic rotations/facing directions based on video evidence
+    and spatial relationships.
+    """
+    import math
+    if not objects:
+        return objects
+
+    # 1. Determine Room Bounds
+    if points_world is not None and len(points_world) > 0:
+        finite_pts = points_world[np.all(np.isfinite(points_world), axis=1)]
+        if len(finite_pts) > 0:
+            pc_min = np.min(finite_pts, axis=0)
+            pc_max = np.max(finite_pts, axis=0)
+        else:
+            pc_min = np.array([-2.5, ground_y, -2.5], dtype=np.float32)
+            pc_max = np.array([2.5, ground_y + 3.0, 2.5], dtype=np.float32)
+    else:
+        pc_min = np.array([-2.5, ground_y, -2.5], dtype=np.float32)
+        pc_max = np.array([2.5, ground_y + 3.0, 2.5], dtype=np.float32)
+
+    room_w = float(pc_max[0] - pc_min[0])
+    room_d = float(pc_max[2] - pc_min[2])
+    room_center_x = (pc_min[0] + pc_max[0]) / 2.0
+    room_center_z = (pc_min[2] + pc_max[2]) / 2.0
+
+    # 2. Re-classify lamps to either ceiling_light or standing_lamp
+    for obj in objects:
+        lbl_lower = obj.label.strip().lower()
+        if lbl_lower in {"lamp", "light"}:
+            if obj.representative_bbox_xyxy is not None and obj.representative_bbox_xyxy[1] < 120:
+                obj.label = "ceiling_light"
+            else:
+                obj.label = "standing_lamp"
+
+    # 3. Classify Placement Categories (FLOOR, WALL, CEILING)
+    for obj in objects:
+        lbl_lower = obj.label.strip().lower()
+        if lbl_lower in {"painting", "mirror", "curtain", "clock", "window", "wall art", "tv"}:
+            obj.placement_category = "wall"
+        elif lbl_lower == "ceiling_light":
+            obj.placement_category = "ceiling"
+        else:
+            obj.placement_category = "floor"
+
+    # 4. Project Floor Contact Points and Spread Estimated Objects
+    for obj in objects:
+        lbl_lower = obj.label.strip().lower()
+        h = obj.size_m[1] if obj.size_m is not None else 1.0
+        
+        # Set default base position and height center
+        obj.base_position = [float(obj.position_world[0]), float(ground_y), float(obj.position_world[2])]
+        obj.position_world[1] = ground_y + h / 2.0
+        
+        # Calculate floor contact point for floor objects if we have camera evidence
+        if obj.placement_category == "floor" and obj.placement_quality != "estimated" and poses_world_from_cam and intrinsics:
+            f_idx = obj.representative_frame_index
+            bbox = obj.representative_bbox_xyxy
+            if f_idx is not None and bbox is not None and f_idx < len(poses_world_from_cam):
+                pose = poses_world_from_cam[f_idx]
+                u_bottom = (bbox[0] + bbox[2]) / 2.0
+                v_bottom = bbox[3]
+                d = float(obj.distance_m) if obj.distance_m > 0 else 1.5
+                
+                try:
+                    p_cam = pixel_to_camera_point(u_bottom, v_bottom, d, intrinsics)
+                    p_world_bottom = camera_to_world(p_cam, pose)
+                    
+                    p_world_bottom[1] = ground_y
+                    p_world_bottom = np.clip(p_world_bottom, pc_min, pc_max)
+                    
+                    obj.base_position = [float(p_world_bottom[0]), float(ground_y), float(p_world_bottom[2])]
+                    obj.position_world = np.array([p_world_bottom[0], ground_y + h / 2.0, p_world_bottom[2]], dtype=np.float32)
+                    obj.placement_quality = "floor-snapped"
+                    obj.placement_confidence = 0.72
+                except Exception as ex:
+                    print(f"Error projecting floor contact point: {ex}")
+
+        # Spread estimated objects across the floor conservatively
+        elif obj.placement_category == "floor" and obj.placement_quality == "estimated" and obj.representative_bbox_xyxy is not None:
+            bbox = obj.representative_bbox_xyxy
+            cx_norm = ((bbox[0] + bbox[2]) / 2.0) / 640.0
+            cy_norm = bbox[3] / 480.0
+            
+            # Reduce spread scaling by 50%
+            world_x = room_center_x + (cx_norm - 0.5) * room_w * 0.5
+            
+            # Map Z depth conservatively (lerp between front and mid of the room)
+            front_z = room_center_z + room_d * 0.2
+            mid_z = room_center_z
+            world_z = mid_z + cy_norm * (front_z - mid_z)
+            
+            margin = 0.2
+            world_x = max(pc_min[0] + margin, min(pc_max[0] - margin, world_x))
+            world_z = max(pc_min[2] + margin, min(pc_max[2] - margin, world_z))
+            
+            obj.base_position = [world_x, float(ground_y), world_z]
+            obj.position_world = np.array([world_x, ground_y + h / 2.0, world_z], dtype=np.float32)
+            obj.placement_quality = "estimated-spread"
+            obj.placement_confidence = 0.55
+
+    # 5. Wall, Floor & Ceiling Placement and Orientation logic
+    for obj in objects:
+        lbl_lower = obj.label.strip().lower()
+        h = obj.size_m[1] if obj.size_m is not None else 1.0
+        
+        # Check distance to room boundaries (walls)
+        dist_left = abs(obj.position_world[0] - pc_min[0])
+        dist_right = abs(obj.position_world[0] - pc_max[0])
+        dist_back = abs(obj.position_world[2] - pc_min[2])
+        dist_front = abs(obj.position_world[2] - pc_max[2])
+        
+        min_d = min(dist_left, dist_right, dist_back, dist_front)
+        
+        # Category A: Ceiling objects snap to top
+        if obj.placement_category == "ceiling":
+            ceiling_y = pc_max[1] if pc_max is not None else ground_y + 2.7
+            obj.position_world[1] = ceiling_y - h / 2.0
+            obj.base_position = [float(obj.position_world[0]), float(ceiling_y), float(obj.position_world[2])]
+            obj.placement_quality = "ceiling-snapped"
+            obj.placement_confidence = 0.85
+            obj.rotation_y = 0.0
+            obj.facing_direction = [0.0, -1.0, 0.0]
+            obj.placement_reason = "attached_to_ceiling"
+
+        # Category B: Wall-mounted objects snap flush to wall at eye level (1.2m - 1.8m)
+        elif obj.placement_category == "wall":
+            depth = obj.size_m[2] if obj.size_m is not None else 0.1
+            
+            if min_d == dist_left:
+                obj.position_world[0] = pc_min[0] + depth / 2.0
+                obj.rotation_y = math.pi / 2.0
+                obj.facing_direction = [1.0, 0.0, 0.0]
+                obj.placement_reason = "placed_against_left_wall_facing_center"
+            elif min_d == dist_right:
+                obj.position_world[0] = pc_max[0] - depth / 2.0
+                obj.rotation_y = -math.pi / 2.0
+                obj.facing_direction = [-1.0, 0.0, 0.0]
+                obj.placement_reason = "placed_against_right_wall_facing_center"
+            elif min_d == dist_back:
+                obj.position_world[2] = pc_min[2] + depth / 2.0
+                obj.rotation_y = 0.0
+                obj.facing_direction = [0.0, 0.0, 1.0]
+                obj.placement_reason = "placed_against_back_wall_facing_center"
+            else:
+                obj.position_world[2] = pc_max[2] - depth / 2.0
+                obj.rotation_y = math.pi
+                obj.facing_direction = [0.0, 0.0, -1.0]
+                obj.placement_reason = "placed_against_front_wall_facing_center"
+            
+            # Clamp height Y to eye-level (1.2m - 1.8m above floor)
+            obj.position_world[1] = np.clip(obj.position_world[1], ground_y + 1.2, ground_y + 1.8)
+            obj.base_position = [float(obj.position_world[0]), float(ground_y), float(obj.position_world[2])]
+            obj.placement_quality = "wall-snapped"
+            obj.placement_confidence = 0.85
+
+        # Category C: Floor Objects
+        else:
+            obj.position_world[1] = ground_y + h / 2.0
+            obj.base_position = [float(obj.position_world[0]), float(ground_y), float(obj.position_world[2])]
+            
+            # Floor snap standing furniture close to wall (< 1.5m)
+            if lbl_lower in {"bed", "sofa", "couch", "cupboard", "wardrobe", "cabinet", "shelf"} and min_d < 1.5:
+                depth = obj.size_m[2] if obj.size_m is not None else 0.5
+                width = obj.size_m[0] if obj.size_m is not None else 1.0
+                
+                if min_d == dist_left:
+                    obj.position_world[0] = pc_min[0] + width / 2.0
+                    obj.rotation_y = math.pi / 2.0
+                    obj.facing_direction = [1.0, 0.0, 0.0]
+                    obj.placement_reason = "placed_against_left_wall_facing_center"
+                elif min_d == dist_right:
+                    obj.position_world[0] = pc_max[0] - width / 2.0
+                    obj.rotation_y = -math.pi / 2.0
+                    obj.facing_direction = [-1.0, 0.0, 0.0]
+                    obj.placement_reason = "placed_against_right_wall_facing_center"
+                elif min_d == dist_back:
+                    obj.position_world[2] = pc_min[2] + depth / 2.0
+                    obj.rotation_y = 0.0
+                    obj.facing_direction = [0.0, 0.0, 1.0]
+                    obj.placement_reason = "placed_against_back_wall_facing_center"
+                else:
+                    obj.position_world[2] = pc_max[2] - depth / 2.0
+                    obj.rotation_y = math.pi
+                    obj.facing_direction = [0.0, 0.0, -1.0]
+                    obj.placement_reason = "placed_against_front_wall_facing_center"
+                    
+                obj.placement_quality = "floor-snapped"
+                obj.placement_confidence = 0.75
+                obj.base_position = [float(obj.position_world[0]), float(ground_y), float(obj.position_world[2])]
+            else:
+                # Default floor orientation faces room center
+                dx = room_center_x - obj.position_world[0]
+                dz = room_center_z - obj.position_world[2]
+                angle = math.atan2(dx, dz)
+                
+                obj.rotation_y = angle
+                obj.facing_direction = [math.sin(angle), 0.0, math.cos(angle)]
+                obj.placement_reason = "oriented_to_face_room_center"
+                obj.placement_confidence = 0.60
+
+            # Floor Occupancy Zone Heuristics
+            if lbl_lower in {"rug", "carpet"}:
+                obj.position_world[0] = room_center_x
+                obj.position_world[2] = room_center_z
+                obj.placement_reason = "centered_on_floor"
+                obj.placement_confidence = 0.80
+            elif lbl_lower in {"table", "dining table"}:
+                obj.position_world[0] = room_center_x + (obj.position_world[0] - room_center_x) * 0.3
+                obj.position_world[2] = room_center_z + (obj.position_world[2] - room_center_z) * 0.3
+                obj.placement_reason = "placed_center_ish"
+                obj.placement_confidence = 0.75
+            elif lbl_lower in {"plant", "potted plant"}:
+                corners = [
+                    [pc_min[0], pc_min[2]],
+                    [pc_min[0], pc_max[2]],
+                    [pc_max[0], pc_min[2]],
+                    [pc_max[0], pc_max[2]]
+                ]
+                best_corner = min(corners, key=lambda c: math.hypot(obj.position_world[0] - c[0], obj.position_world[2] - c[1]))
+                dist = math.hypot(obj.position_world[0] - best_corner[0], obj.position_world[2] - best_corner[1])
+                if dist < 2.0:
+                    offset_x = 0.4 if best_corner[0] == pc_min[0] else -0.4
+                    offset_z = 0.4 if best_corner[1] == pc_min[2] else -0.4
+                    obj.position_world[0] = best_corner[0] + offset_x
+                    obj.position_world[2] = best_corner[1] + offset_z
+                    obj.placement_reason = "placed_near_corner"
+                    obj.placement_confidence = 0.75
+
+    # 6. Relationship-Based Orientations
+    sofas = [o for o in objects if o.label.strip().lower() in {"sofa", "couch"}]
+    tvs = [o for o in objects if o.label.strip().lower() == "tv"]
+    
+    if sofas and tvs:
+        best_sofa = None
+        best_tv = None
+        min_dist = 1e9
+        for s in sofas:
+            for t in tvs:
+                dist = float(np.linalg.norm(s.position_world - t.position_world))
+                if dist < min_dist:
+                    min_dist = dist
+                    best_sofa = s
+                    best_tv = t
+        if best_sofa and best_tv:
+            dx = best_tv.position_world[0] - best_sofa.position_world[0]
+            dz = best_tv.position_world[2] - best_sofa.position_world[2]
+            angle = math.atan2(dx, dz)
+            
+            best_sofa.rotation_y = angle
+            best_sofa.facing_direction = [math.sin(angle), 0.0, math.cos(angle)]
+            best_sofa.placement_reason = "oriented_to_face_tv"
+            best_sofa.placement_confidence = 0.85
+            
+            best_tv.rotation_y = angle + math.pi
+            best_tv.facing_direction = [-math.sin(angle), 0.0, -math.cos(angle)]
+            best_tv.placement_reason = "oriented_to_face_sofa"
+            best_tv.placement_confidence = 0.85
+
+    tables = [o for o in objects if o.label.strip().lower() in {"table", "dining table"}]
+    chairs = [o for o in objects if o.label.strip().lower() == "chair"]
+    
+    for c in chairs:
+        if tables:
+            nearest_t = min(tables, key=lambda t: float(np.linalg.norm(c.position_world - t.position_world)))
+            dist = float(np.linalg.norm(c.position_world - nearest_t.position_world))
+            if dist < 2.5:
+                dx = nearest_t.position_world[0] - c.position_world[0]
+                dz = nearest_t.position_world[2] - c.position_world[2]
+                angle = math.atan2(dx, dz)
+                
+                c.rotation_y = angle
+                c.facing_direction = [math.sin(angle), 0.0, math.cos(angle)]
+                c.placement_reason = "oriented_to_face_table"
+                c.placement_confidence = 0.80
+
+    for t in tables:
+        t.rotation_y = 0.0
+        t.facing_direction = [0.0, 0.0, 1.0]
+        t.placement_reason = "aligned_to_room_axes"
+        t.placement_confidence = 0.70
+
+    for o in objects:
+        if o.label.strip().lower() in {"rug", "carpet"}:
+            o.rotation_y = 0.0
+            o.facing_direction = [0.0, 0.0, 1.0]
+            o.placement_reason = "aligned_to_room_axes"
+            o.placement_confidence = 0.70
+
+    # 7. Room-Center Bias for uncertain placements
+    for obj in objects:
+        if obj.placement_confidence < 0.70:
+            obj.position_world[0] = room_center_x + (obj.position_world[0] - room_center_x) * 0.7
+            obj.position_world[2] = room_center_z + (obj.position_world[2] - room_center_z) * 0.7
+
+    # Final Boundary Clamping & Base Position update
+    margin = 0.2
+    for obj in objects:
+        obj.position_world[0] = np.clip(obj.position_world[0], pc_min[0] + margin, pc_max[0] - margin)
+        obj.position_world[2] = np.clip(obj.position_world[2], pc_min[2] + margin, pc_max[2] - margin)
+        if obj.base_position is not None:
+            obj.base_position[0] = float(obj.position_world[0])
+            obj.base_position[2] = float(obj.position_world[2])
+            
+    return objects
+
+
+
 def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) -> list[SceneObject]:
     if not tracks:
         return []
@@ -1862,8 +2187,7 @@ def write_objects_json(
     object_payload = []
     for obj in objects:
         pos = [float(obj.position_world[0]), float(obj.position_world[1]), float(obj.position_world[2])]
-        if ground_y is not None and np.isfinite(ground_y):
-            pos[1] = float(ground_y)
+        base_pos = list(obj.base_position) if obj.base_position is not None else [pos[0], float(ground_y) if ground_y is not None else pos[1], pos[2]]
 
         size = list(obj.size_m) if obj.size_m is not None else None
         size_dict = {
@@ -1885,6 +2209,12 @@ def write_objects_json(
             "confidence": float(obj.representative_score) if obj.representative_score is not None else None,
             "bbox_2d": list(obj.representative_bbox_xyxy) if obj.representative_bbox_xyxy is not None else None,
             "position_world": pos,
+            "base_position": base_pos,
+            "rotation_y": float(obj.rotation_y),
+            "facing_direction": list(obj.facing_direction) if obj.facing_direction is not None else [0.0, 0.0, 1.0],
+            "placement_reason": str(obj.placement_reason),
+            "placement_confidence": float(obj.placement_confidence),
+            "placement_category": str(obj.placement_category),
             "distance_m": float(obj.distance_m),
             "observations": int(obj.observations),
             "representative_frame_index": int(obj.representative_frame_index) if obj.representative_frame_index is not None else None,
@@ -1936,6 +2266,10 @@ def write_objects_json(
     if metadata is not None:
         metadata["reason"] = metadata.get("fallback_reason") or "Converted 2D YOLO detections to estimated 3D objects"
         metadata["fallback_used"] = metadata.get("fallback_used", False)
+        metadata["placement_engine"] = True
+        metadata["orientation_estimation"] = True
+        metadata["wall_snapping_enabled"] = True
+        metadata["relationship_based_orientation"] = True
         payload["metadata"] = metadata
         
         # Write raw_detections.json separately as requested
@@ -1957,6 +2291,10 @@ def write_objects_json(
             "final_objects_count": len(object_payload),
             "fallback_used": False,
             "reason": "Converted 2D YOLO detections to estimated 3D objects",
+            "placement_engine": True,
+            "orientation_estimation": True,
+            "wall_snapping_enabled": True,
+            "relationship_based_orientation": True,
             "rejection_reasons": {
                 "low_confidence": 0,
                 "unallowed_class": 0

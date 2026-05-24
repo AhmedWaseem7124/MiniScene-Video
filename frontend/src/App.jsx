@@ -107,6 +107,7 @@ function App() {
     showRepairPoints: false,
     showEditedPointCloud: false,
     showObjectDebug: false,
+    showObjectDirections: false,
   });
 
   // Clear old cache on load

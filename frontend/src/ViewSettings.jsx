@@ -80,6 +80,7 @@ export default function ViewSettings({
           <ToggleControl label="Repair Points" checked={settings.showRepairPoints} onChange={(v) => handleChange('showRepairPoints', v)} />
           <ToggleControl label="Edited Point Cloud" checked={settings.showEditedPointCloud} onChange={(v) => handleChange('showEditedPointCloud', v)} />
           <ToggleControl label="Object Coordinate Debug" checked={settings.showObjectDebug} onChange={(v) => handleChange('showObjectDebug', v)} />
+          <ToggleControl label="Show Object Directions" checked={settings.showObjectDirections} onChange={(v) => handleChange('showObjectDirections', v)} />
         </div>
 
         {/* Actions */}

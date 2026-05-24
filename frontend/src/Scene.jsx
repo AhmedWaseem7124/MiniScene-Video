@@ -1,6 +1,6 @@
 import React, { Suspense, useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, PointerLockControls, Environment, ContactShadows, useCursor, TransformControls, Html } from '@react-three/drei';
+import { OrbitControls, PointerLockControls, Environment, ContactShadows, useCursor, TransformControls, Html, Line } from '@react-three/drei';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader';
 import { useLoader } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -244,6 +244,7 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
   const confPct = Math.round(conf * 100);
 
   const isEstimated = object.placement_quality === 'estimated';
+  const category = object.placement_category || 'floor';
   const boxColor = selected 
     ? '#6366f1' 
     : hovered 
@@ -344,16 +345,42 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
             }}>
               {object.source === 'heuristic' ? 'HEURISTIC' : 'YOLO'}
             </span>
-            {isEstimated ? (
-              <span style={{ background: 'rgba(0,0,0,0.25)', padding: '2px 5px', borderRadius: 4, fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                Estimated
+            <span style={{
+              background: category === 'ceiling' 
+                ? 'rgba(236, 72, 153, 0.95)' 
+                : category === 'wall' 
+                  ? 'rgba(168, 85, 247, 0.95)' 
+                  : 'rgba(59, 130, 246, 0.95)',
+              padding: '2px 6px',
+              borderRadius: 4,
+              fontSize: '0.6rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              fontWeight: 800
+            }}>
+              {category}
+            </span>
+            {object.placement_quality && (
+              <span style={{
+                background: object.placement_quality === 'wall-snapped' 
+                  ? 'rgba(168,85,247,0.85)' 
+                  : object.placement_quality === 'floor-snapped' 
+                    ? 'rgba(16,185,129,0.85)' 
+                    : 'rgba(0,0,0,0.25)',
+                padding: '2px 6px',
+                borderRadius: 4,
+                fontSize: '0.6rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                fontWeight: 650
+              }}>
+                {object.placement_quality.replace('-', ' ')}
               </span>
-            ) : (
-              confPct > 0 && (
-                <span style={{ fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
-                  {confPct}%
-                </span>
-              )
+            )}
+            {confPct > 0 && !isEstimated && (
+              <span style={{ fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
+                {confPct}%
+              </span>
             )}
           </div>
           {viewSettings?.showObjectDebug && (
@@ -367,6 +394,42 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
           )}
         </div>
       </Html>
+
+      {/* Facing Direction Visualizer Arrow */}
+      {viewSettings?.showObjectDirections && (
+        <group>
+          {/* Stem pointing forward (+Z local is forward) */}
+          <Line
+            points={[[0, 0.05, 0], [0, 0.05, d / 2 + 0.6]]}
+            color="#10b981"
+            lineWidth={3}
+          />
+          {/* Arrow Head (cone) */}
+          <mesh position={[0, 0.05, d / 2 + 0.6]} rotation={[Math.PI / 2, 0, 0]}>
+            <coneGeometry args={[0.08, 0.2, 8]} />
+            <meshBasicMaterial color="#10b981" />
+          </mesh>
+          {/* Label indicating facing reason */}
+          <Html position={[0, 0.15, d / 2 + 0.7]} center distanceFactor={8} zIndexRange={[100, 0]}>
+            <div style={{
+              background: 'rgba(16, 185, 129, 0.95)',
+              color: '#0f1115',
+              padding: '2px 6px',
+              borderRadius: 4,
+              fontSize: '0.65rem',
+              fontWeight: 'bold',
+              whiteSpace: 'nowrap',
+              pointerEvents: 'none',
+              boxShadow: '0 2px 6px rgba(16,185,129,0.3)',
+              border: '1px solid rgba(255,255,255,0.2)'
+            }}>
+              {object.placement_reason 
+                ? object.placement_reason.replace(/_/g, ' ') 
+                : 'oriented'}
+            </div>
+          </Html>
+        </group>
+      )}
     </group>
   );
 }
@@ -607,9 +670,31 @@ export default function Scene({
 
       let finalX = clampedX;
       let finalZ = clampedZ;
-      let rotationY = 0;
+      const floorY = viewSettings.floorHeight || -2;
+      let finalY = floorY + h / 2; // Default for floor items
+      let rotationY = obj.rotation_y !== undefined ? obj.rotation_y : 0;
 
-      if (isWallMountedOrStandingAgainstWall) {
+      if (obj.base_position) {
+        finalX = obj.base_position[0];
+        // Flip Z because ThreeJS Z is -Python Z
+        finalZ = -obj.base_position[2];
+      }
+
+      // Height logic based on placement category
+      const category = obj.placement_category || (isWallObject ? 'wall' : 'floor');
+
+      if (category === 'ceiling') {
+        const ceilingY = pcStats && pcStats.max ? -pcStats.min.y : floorY + 2.7;
+        finalY = ceilingY - h / 2;
+      } else if (category === 'wall') {
+        const tempY = obj.position_world ? -obj.position_world[1] : y_scene;
+        finalY = Math.max(floorY + 1.2, Math.min(floorY + 1.8, tempY));
+      } else {
+        // Floor object: Force exactly onto floor plane and apply vertical sanity clamp of 1.2m
+        finalY = Math.min(floorY + h / 2, floorY + 1.2);
+      }
+
+      if (!obj.base_position && isWallMountedOrStandingAgainstWall && !obj.rotation_y) {
         const distToLeft = Math.abs(clampedX - minX);
         const distToRight = Math.abs(clampedX - maxX);
         const distToBack = Math.abs(clampedZ - minZ);
@@ -617,39 +702,25 @@ export default function Scene({
         const minDist = Math.min(distToLeft, distToRight, distToBack, distToFront);
 
         if (minDist === distToLeft) {
-          // Snap flush against left wall
           finalX = minX + w / 2;
-          rotationY = Math.PI / 2; // face +X
+          rotationY = Math.PI / 2;
         } else if (minDist === distToRight) {
-          // Snap flush against right wall
           finalX = maxX - w / 2;
-          rotationY = -Math.PI / 2; // face -X
+          rotationY = -Math.PI / 2;
         } else if (minDist === distToBack) {
-          // Snap flush against back wall
           finalZ = minZ + d / 2;
-          rotationY = 0; // face +Z
+          rotationY = 0;
         } else {
-          // Snap flush against front wall
           finalZ = maxZ - d / 2;
-          rotationY = Math.PI; // face -Z
+          rotationY = Math.PI;
         }
-      }
-
-      // Height logic
-      const floorY = viewSettings.floorHeight || -2;
-      let finalY = floorY + h / 2; // Default for floor items
-
-      if (isWallObject) {
-        // Ceiling estimation
-        const ceilingY = pcStats && pcStats.max ? -pcStats.min.y : 3;
-        // Keep estimated Y position within wall limits
-        finalY = Math.max(floorY + h / 2 + 0.1, Math.min(ceilingY - h / 2 - 0.1, y_scene));
       }
 
       const finalPos = [finalX, finalY - h / 2, finalZ];
 
       return {
         ...obj,
+        placement_category: category,
         raw_center: [rawX, rawY, rawZ],
         converted_center: [x_scene, y_scene, z_scene],
         box_3d: {
@@ -767,6 +838,10 @@ export default function Scene({
             transformMode={transformMode}
           />
         ))}
+
+        {viewSettings.showGrid && (
+          <gridHelper args={[15, 15, '#06b6d4', '#475569']} position={[0, viewSettings.floorHeight + 0.02, 0]} />
+        )}
 
         <ContactShadows opacity={0.4} scale={12} blur={2.5} far={5} position={[0, viewSettings.floorHeight + 0.01, 0]} />
         <Environment preset="apartment" />

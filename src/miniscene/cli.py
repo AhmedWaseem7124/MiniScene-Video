@@ -14,6 +14,7 @@ from miniscene.cv.objects import (
     detect_scene_entities_3d,
     estimate_ground_plane,
     refine_objects_with_point_cloud,
+    refine_object_placements,
     write_objects_json,
 )
 from miniscene.depth.estimator import DepthEstimator
@@ -534,16 +535,14 @@ def run_pipeline(args: argparse.Namespace) -> None:
             ground_y = estimate_ground_plane(recon.points_world)
             objects = refine_objects_with_point_cloud(objects, recon.points_world)
             objects = align_objects_to_ground(objects, ground_y)
-
-            # Clamp estimated fallback objects' position coordinates to point cloud boundaries
-            if recon.points_world is not None and len(recon.points_world) > 0:
-                finite_pts = recon.points_world[np.all(np.isfinite(recon.points_world), axis=1)]
-                if len(finite_pts) > 0:
-                    min_bounds = np.min(finite_pts, axis=0)
-                    max_bounds = np.max(finite_pts, axis=0)
-                    for obj in objects:
-                        if getattr(obj, "placement_quality", "good") == "estimated":
-                            obj.position_world = np.clip(obj.position_world, min_bounds, max_bounds)
+            objects = refine_object_placements(
+                objects,
+                ground_y,
+                recon.points_world,
+                poses_world_from_cam=poses,
+                depth_maps=depth_maps,
+                intrinsics=intrinsics
+            )
         elapsed_object_detection = metadata.get("object_detection_time", 0.0)
         elapsed_object_tracking = metadata.get("object_tracking_time", 0.0)
 
