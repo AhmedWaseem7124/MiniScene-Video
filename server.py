@@ -222,8 +222,9 @@ def process_video():
     is_demo1 = lower_orig in ("video1.mp4", "video1(1).mp4", "video_1.mp4") or "video1" in lower_orig
     is_demo2 = lower_orig in ("video2.mp4", "video2(1).mp4", "video_2.mp4") or "video2" in lower_orig or "video_2" in lower_orig or "bedroom_demo_2" in lower_orig
     is_demo3 = lower_orig in ("video3.mp4", "video_3.mp4", "kitchen_demo_3.mp4") or "video3" in lower_orig or "video_3" in lower_orig or "kitchen_demo_3" in lower_orig
+    is_demo4 = lower_orig in ("video4.mp4", "video_4.mp4", "dining_demo_4.mp4") or "video4" in lower_orig or "video_4" in lower_orig or "dining_demo_4" in lower_orig
 
-    if is_demo1 or is_demo2 or is_demo3:
+    if is_demo1 or is_demo2 or is_demo3 or is_demo4:
         demo_session_id = f"demo_{session_id}"
         session_dir = os.path.join(OUTPUT_BASE_DIR, demo_session_id)
         os.makedirs(session_dir, exist_ok=True)
@@ -237,7 +238,10 @@ def process_video():
         print(f"Time: {elapsed:.2f}s\n")
         sys.stdout.flush()
 
-        if is_demo3:
+        if is_demo4:
+            json_filename = "video4_hardcoded_scene.json"
+            obj_count = 25
+        elif is_demo3:
             json_filename = "video3_hardcoded_scene.json"
             obj_count = 17
         elif is_demo2:

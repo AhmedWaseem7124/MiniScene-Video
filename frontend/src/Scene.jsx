@@ -282,9 +282,134 @@ function DetectedPlaceholderModel({ label, size, object }) {
     }
   }, [object]);
 
+  const getModelScaleAndOffset = () => {
+    let type = null;
+    
+    // Curtains
+    if (labelLower.includes('curtain') || labelLower.includes('blind') || labelLower.includes('rail')) {
+      type = 'Curtain';
+    }
+    // Bed and frame
+    else if (labelLower.includes('king')) {
+      type = 'KingBed';
+    }
+    else if (labelLower.includes('bed_frame') || labelLower.includes('bedding') || (labelLower.includes('bed') && !labelLower.includes('side'))) {
+      type = 'Bed';
+    }
+    // Nightstand / Bedside table
+    else if (labelLower.includes('nightstand') || labelLower.includes('bedside') || labelLower.includes('drawer')) {
+      type = 'BedsideTable';
+    }
+    // Kitchen specific models
+    else if (labelLower.includes('refrigerator') || labelLower.includes('fridge')) {
+      type = 'Refrigerator';
+    }
+    else if (labelLower.includes('oven')) {
+      type = 'OvenStack';
+    }
+    else if (labelLower.includes('display_cabinet') || (labelLower.includes('display') && labelLower.includes('cabinet'))) {
+      type = 'DisplayCabinet';
+    }
+    else if (labelLower.includes('kitchen_cabinet') || labelLower.includes('lower_kitchen') || labelLower.includes('base_cabinet') || labelLower.includes('cabinet_main')) {
+      type = 'KitchenCabinet';
+    }
+    // Wardrobe
+    else if (labelLower.includes('wardrobe')) {
+      type = 'Wardrobe';
+    }
+    // Console
+    else if (labelLower.includes('console') || labelLower.includes('vanity')) {
+      type = 'Console';
+    }
+    // Mirror
+    else if (labelLower.includes('mirror')) {
+      type = 'WallMirror';
+    }
+    // Pendant Light / Chandelier
+    else if (labelLower.includes('pendant_light') || labelLower.includes('pendant') || labelLower.includes('chandelier')) {
+      type = 'PendantLight';
+    }
+    // Rug
+    else if (labelLower.includes('rug') || labelLower.includes('carpet')) {
+      type = 'Rug';
+    }
+    // Lounge seating
+    else if (labelLower.includes('lounge')) {
+      type = 'Armchair';
+    }
+    // TV Wall or TV Stand
+    else if (labelLower.includes('tv_wall') || labelLower.includes('tv') || labelLower.includes('screen')) {
+      type = 'TVStand';
+    }
+    // Cabinet/Cupboard
+    else if (labelLower.includes('cabinet') || labelLower.includes('cupboard')) {
+      type = 'Cupboard';
+    }
+    // Chandelier or ceiling light / sconce
+    else if (labelLower.includes('ceiling_light') || labelLower.includes('light') || labelLower.includes('lamp') || labelLower.includes('sconce')) {
+      type = 'Light';
+    }
+    // Sofa, sectional, chaise
+    else if (labelLower.includes('sofa') || labelLower.includes('sectional') || labelLower.includes('chaise')) {
+      type = 'Sofa';
+    }
+    // Coffee table, side table, table
+    else if (labelLower.includes('table')) {
+      type = 'Table';
+    }
+    // Chair, armchair
+    else if (labelLower.includes('chair') || labelLower.includes('armchair') || labelLower.includes('stool') || labelLower.includes('ottoman') || labelLower.includes('seat')) {
+      type = 'Chair';
+    }
+    // Painting, wall art
+    else if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('canvas') || labelLower.includes('art') || labelLower.includes('artwork')) {
+      type = 'Painting';
+    }
+    else {
+      const modelType = LABEL_TO_MODEL_TYPE[labelLower];
+      if (modelType) type = modelType;
+    }
+
+    if (!type) {
+      // Default box is unit-sized and centered at [0, 0, 0]
+      return { scale: [1, 1, 1], offset: [0, 0, 0], isCustom: false };
+    }
+
+    let scale = [1, 1, 1];
+    let offset = [0, -0.5, 0]; // Most models start at y=0 and extend to y=1 (or their natural height)
+
+    if (type === 'Cupboard') scale = [1 / 1.05, 1 / 2.0, 1 / 0.54];
+    else if (type === 'Bookshelf') scale = [1 / 0.9, 1 / 2.0, 1 / 0.3];
+    else if (type === 'TVStand') scale = [1 / 1.6, 1 / 0.6, 1 / 0.45];
+    else if (type === 'Mirror') scale = [1 / 0.72, 1 / 1.76, 1 / 0.06];
+    else if (type === 'WallMirror') scale = [1, 1, 1];
+    else if (type === 'Painting') scale = [1 / 1.1, 1 / 1.525, 1 / 0.06];
+    else if (type === 'Light') scale = [1 / 0.26, 1 / 1.61, 1 / 0.26];
+    else if (type === 'PendantLight') {
+      scale = [1 / 0.28, 1 / 1.97, 1 / 0.28];
+      offset = [0, 0.385, 0]; // Center translation since raw ranges [-1.37, 0.6]
+    }
+    else if (type === 'Bed') scale = [1 / 1.42, 1 / 1.15, 1 / 2.14];
+    else if (type === 'KingBed') scale = [1 / 2.02, 1 / 1.25, 1 / 2.29];
+    else if (type === 'Chair') scale = [1 / 0.52, 1 / 1.16, 1 / 0.52];
+    else if (type === 'Armchair') scale = [1 / 0.82, 1 / 1.22, 1 / 0.8];
+    else if (type === 'Sofa') scale = [1 / 2.1, 1 / 0.9, 1 / 0.92];
+    else if (type === 'Table') scale = [1 / 1.6, 1 / 0.78, 1 / 0.85];
+    else if (type === 'Desk') scale = [1 / 1.4, 1 / 0.785, 1 / 0.7];
+    else if (type === 'SideTable') scale = [1 / 0.6, 1 / 0.57, 1 / 0.6];
+    else if (type === 'Plant') scale = [1 / 0.44, 1 / 1.06, 1 / 0.44];
+    else if (type === 'Decoration') scale = [1 / 0.32, 1 / 0.62, 1 / 0.32];
+    else if (type === 'Rug') scale = [1 / 2.4, 1 / 0.012, 1 / 1.6];
+    else if (['Curtain', 'BedsideTable', 'Wardrobe', 'Console', 'KitchenCabinet', 'Refrigerator', 'OvenStack', 'DisplayCabinet'].includes(type)) {
+      scale = [1, 1, 1];
+    }
+
+    return { scale, offset, isCustom: true };
+  };
+
   const getModel = () => {
     // Curtains
-    if (labelLower.includes('curtain')) {
+    if (labelLower.includes('curtain') || labelLower.includes('blind') || labelLower.includes('rail')) {
       return renderModel('Curtain');
     }
 
@@ -330,8 +455,8 @@ function DetectedPlaceholderModel({ label, size, object }) {
       return renderModel('WallMirror');
     }
 
-    // Pendant Light
-    if (labelLower.includes('pendant_light') || labelLower.includes('pendant')) {
+    // Pendant Light / Chandelier
+    if (labelLower.includes('pendant_light') || labelLower.includes('pendant') || labelLower.includes('chandelier')) {
       return renderModel('PendantLight');
     }
 
@@ -345,8 +470,8 @@ function DetectedPlaceholderModel({ label, size, object }) {
       return renderModel('Armchair');
     }
 
-    // Custom simple decor boxes for pillows, books, blankets, cups, frames
-    if (labelLower.includes('pillow') || labelLower.includes('book') || labelLower.includes('blanket') || labelLower.includes('magazine') || labelLower.includes('decor') || labelLower.includes('throw') || labelLower.includes('vase') || labelLower.includes('cup') || labelLower.includes('frame')) {
+    // Custom simple decor boxes for pillows, books, blankets, cups, frames, centerpiece, candles
+    if (labelLower.includes('pillow') || labelLower.includes('book') || labelLower.includes('blanket') || labelLower.includes('magazine') || labelLower.includes('decor') || labelLower.includes('throw') || labelLower.includes('vase') || labelLower.includes('cup') || labelLower.includes('frame') || labelLower.includes('centerpiece') || labelLower.includes('candle')) {
       return (
         <mesh>
           <boxGeometry args={[1, 1, 1]} />
@@ -366,7 +491,7 @@ function DetectedPlaceholderModel({ label, size, object }) {
     }
 
     // Chandelier or ceiling light / sconce
-    if (labelLower.includes('chandelier') || labelLower.includes('ceiling_light') || labelLower.includes('light') || labelLower.includes('lamp') || labelLower.includes('sconce')) {
+    if (labelLower.includes('ceiling_light') || labelLower.includes('light') || labelLower.includes('lamp') || labelLower.includes('sconce')) {
       return renderModel('Light');
     }
 
@@ -381,12 +506,12 @@ function DetectedPlaceholderModel({ label, size, object }) {
     }
 
     // Chair, armchair
-    if (labelLower.includes('chair') || labelLower.includes('armchair') || labelLower.includes('stool') || labelLower.includes('ottoman')) {
+    if (labelLower.includes('chair') || labelLower.includes('armchair') || labelLower.includes('stool') || labelLower.includes('ottoman') || labelLower.includes('seat')) {
       return renderModel('Chair');
     }
 
     // Painting, wall art
-    if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('canvas') || labelLower.includes('art')) {
+    if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('canvas') || labelLower.includes('art') || labelLower.includes('artwork')) {
       return renderModel('Painting');
     }
 
@@ -403,9 +528,13 @@ function DetectedPlaceholderModel({ label, size, object }) {
     return renderModel(modelType);
   };
 
+  const { scale: modelScale, offset: modelOffset } = getModelScaleAndOffset();
+
   return (
     <group ref={groupRef} scale={s}>
-      {getModel()}
+      <group scale={modelScale} position={modelOffset}>
+        {getModel()}
+      </group>
     </group>
   );
 }
@@ -451,6 +580,7 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTe
   // group position is set to the base of the object: base_position
   const pos = object.box_3d.base_position || [x, viewSettings?.floorHeight || -2, z];
   const rotY = object.box_3d?.rotationY || 0;
+  const centerPos = [pos[0], pos[1] + h / 2, pos[2]];
 
   // For debug output:
   const [x_scene, y_scene, z_scene] = object.converted_center || [x, -y, -z];
@@ -458,10 +588,10 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTe
   const [minX, maxX, minZ, maxZ] = roomBounds || [-5, 5, -5, 5];
 
   return (
-    <group position={pos} rotation={[0, rotY, 0]}>
+    <group position={centerPos} rotation={[0, rotY, 0]}>
       {/* Red Cube at object origin (Requirement 7) */}
       {viewSettings?.showObjectDebug && (
-        <mesh position={[0, 0, 0]} renderOrder={9999}>
+        <mesh position={[0, -h / 2, 0]} renderOrder={9999}>
           <boxGeometry args={[0.08, 0.08, 0.08]} />
           <meshBasicMaterial color="#ef4444" depthTest={false} transparent opacity={0.95} />
         </mesh>
@@ -469,7 +599,7 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTe
 
       {/* Floor Contact Shadow (Requirement 9) */}
       {isFloorObject && shadowTexture && (
-        <mesh position={[0, 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <mesh position={[0, -h / 2 + 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]}>
           <planeGeometry args={[w * 1.2, d * 1.2]} />
           <meshBasicMaterial map={shadowTexture} transparent opacity={object.opacity ? object.opacity * 0.75 : 0.7} depthWrite={false} />
         </mesh>
@@ -485,7 +615,7 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTe
         onClick={e => { e.stopPropagation(); onClick(object.id); }}
         onPointerOver={e => { e.stopPropagation(); setHovered(true); }}
         onPointerOut={() => setHovered(false)}
-        position={[0, h / 2, 0]}
+        position={[0, 0, 0]}
       >
         <boxGeometry args={[w, h, d]} />
         <meshStandardMaterial
@@ -498,7 +628,7 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTe
 
       {/* Box wireframe edges */}
       {isEstimated ? (
-        <lineSegments position={[0, h / 2, 0]} ref={lineRef}>
+        <lineSegments position={[0, 0, 0]} ref={lineRef}>
           <edgesGeometry args={[new THREE.BoxGeometry(w, h, d)]} />
           <lineDashedMaterial 
             color={boxColor} 
@@ -509,14 +639,14 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTe
           />
         </lineSegments>
       ) : (
-        <lineSegments position={[0, h / 2, 0]}>
+        <lineSegments position={[0, 0, 0]}>
           <edgesGeometry args={[new THREE.BoxGeometry(w, h, d)]} />
           <lineBasicMaterial color={boxColor} transparent opacity={selected ? 0.9 : 0.55} />
         </lineSegments>
       )}
 
       {/* Dark thin outline for all objects (Requirement 4) */}
-      <lineSegments position={[0, h / 2, 0]}>
+      <lineSegments position={[0, 0, 0]}>
         <edgesGeometry args={[new THREE.BoxGeometry(w, h, d)]} />
         <lineBasicMaterial color="#1a1a1a" transparent opacity={0.45} />
       </lineSegments>
@@ -524,7 +654,7 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTe
       {/* Floating HTML label (Requirement 7) */}
       {(viewSettings?.showLabels || selected || viewSettings?.showObjectDebug) && (
         <Html
-          position={[0, h + 0.35, 0]}
+          position={[0, h / 2 + 0.35, 0]}
           center
           distanceFactor={8}
           style={{ pointerEvents: 'none', userSelect: 'none' }}
@@ -649,20 +779,20 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTe
 
       {/* Facing Direction Visualizer Arrow */}
       {viewSettings?.showObjectDirections && (
-        <group>
+        <group position={[0, -h / 2 + 0.05, 0]}>
           {/* Stem pointing forward (+Z local is forward) */}
           <Line
-            points={[[0, 0.05, 0], [0, 0.05, d / 2 + 0.6]]}
+            points={[[0, 0, 0], [0, 0, d / 2 + 0.6]]}
             color="#10b981"
             lineWidth={3}
           />
           {/* Arrow Head (cone) */}
-          <mesh position={[0, 0.05, d / 2 + 0.6]} rotation={[Math.PI / 2, 0, 0]}>
+          <mesh position={[0, 0, d / 2 + 0.6]} rotation={[Math.PI / 2, 0, 0]}>
             <coneGeometry args={[0.08, 0.2, 8]} />
             <meshBasicMaterial color="#10b981" />
           </mesh>
           {/* Label indicating facing reason */}
-          <Html position={[0, 0.15, d / 2 + 0.7]} center distanceFactor={8} zIndexRange={[100, 0]}>
+          <Html position={[0, 0.1, d / 2 + 0.7]} center distanceFactor={8} zIndexRange={[100, 0]}>
             <div style={{
               background: 'rgba(16, 185, 129, 0.95)',
               color: '#0f1115',
@@ -954,9 +1084,10 @@ export default function Scene({
             snapX = leftWallX + d / 2;
           } else if (targetId.includes('right')) {
             snapX = rightWallX - d / 2;
-          } else if (targetId.includes('front')) {
+          } else if (targetId.includes('front') || (targetId.includes('back') && targetId.includes('window'))) {
+            // In Video 4, the back wall is at negative Z (minimum Z), which is frontWallZ
             snapZ = frontWallZ + d / 2;
-          } else if (targetId.includes('back')) {
+          } else if (targetId.includes('back') || targetId.includes('entrance')) {
             snapZ = backWallZ - d / 2;
           }
         }
@@ -1022,7 +1153,7 @@ export default function Scene({
           }
         } else if (cat.includes('wall') || cat.includes('mirror') || cat.includes('painting') || cat.includes('window') || cat.includes('curtain') || labelLower.includes('mirror') || labelLower.includes('painting') || labelLower.includes('window') || labelLower.includes('curtain') || labelLower.includes('tv') || labelLower.includes('screen')) {
           // Wall objects
-          if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('art')) {
+          if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('art') || labelLower.includes('artwork')) {
             finalPosY = FLOOR_Y_SCALED + roomHeight_scaled * 0.65;
           } else if (labelLower.includes('tv') || labelLower.includes('screen')) {
             finalPosY = FLOOR_Y_SCALED + 1.4 * scaleFactor;
@@ -1050,15 +1181,38 @@ export default function Scene({
           finalBaseY = FLOOR_Y_SCALED + base_y_json * scaleFactor;
         }
 
-        // 3. Validation & Auto-correct
-        const bottom = finalPosY - scaledH / 2;
-        if (bottom < FLOOR_Y_SCALED) {
-          finalPosY += (FLOOR_Y_SCALED - bottom);
-          finalBaseY = finalPosY - scaledH / 2;
+        // 3. Validation & Auto-correct pass
+        let validatedPosY = finalPosY;
+        let validatedBaseY = finalBaseY;
+        let validatedX = clampedX;
+        let validatedZ = clampedZ;
+
+        // A. Prevent going below floor
+        const bottomY = validatedPosY - scaledH / 2;
+        if (bottomY < FLOOR_Y_SCALED) {
+          validatedPosY += (FLOOR_Y_SCALED - bottomY);
+          validatedBaseY = validatedPosY - scaledH / 2;
         }
 
-        const basePos = [clampedX, finalBaseY, clampedZ];
-        const centerPos = [clampedX, finalPosY, clampedZ];
+        // B. Floor-standing furniture must not float
+        const isFloorFurniture = isFurniture && !isSuspendedOrSurface;
+        if (isFloorFurniture && !labelLower.includes('rug')) {
+          if (validatedBaseY > FLOOR_Y_SCALED + 0.001) {
+            validatedBaseY = FLOOR_Y_SCALED;
+            validatedPosY = FLOOR_Y_SCALED + scaledH / 2;
+          }
+        }
+
+        // C. Clamp within room bounds (prevent outside bounds or intersecting walls)
+        const halfW = (w_world * scaleFactor) / 2;
+        const halfD = (d_world * scaleFactor) / 2;
+        if (validatedX - halfW < minX) validatedX = minX + halfW;
+        if (validatedX + halfW > maxX) validatedX = maxX - halfW;
+        if (validatedZ - halfD < minZ) validatedZ = minZ + halfD;
+        if (validatedZ + halfD > maxZ) validatedZ = maxZ - halfD;
+
+        const basePos = [validatedX, validatedBaseY, validatedZ];
+        const centerPos = [validatedX, validatedPosY, validatedZ];
         
         return {
           ...obj,
