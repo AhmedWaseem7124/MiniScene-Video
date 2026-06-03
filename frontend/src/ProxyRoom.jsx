@@ -27,7 +27,6 @@ export default function ProxyRoom({
   if (isHardcodedDemo && roomData) {
     const floorSize = roomData.floor?.size || [6.4, 0.04, 7.2];
     const floorPos = roomData.floor?.position || [0, 0, 0];
-    const floorColor = roomData.floor?.color || "#e8e3dc";
 
     return (
       <group>
@@ -40,11 +39,11 @@ export default function ProxyRoom({
         >
           <boxGeometry args={floorSize} />
           <meshStandardMaterial
-            color={floorColor}
+            color="#d7d0c4"
             roughness={0.7}
-            metalness={0.1}
-            transparent
-            opacity={isPointsMode ? 0 : viewMode === 'hybrid' ? 0.92 : 1}
+            metalness={0.05}
+            transparent={false}
+            opacity={1}
           />
         </mesh>
 
@@ -53,10 +52,10 @@ export default function ProxyRoom({
           <mesh key={wall.id} position={wall.position} receiveShadow>
             <boxGeometry args={wall.size} />
             <meshStandardMaterial
-              color={wall.color || "#d8d3ca"}
+              color="#b8b4aa"
               roughness={0.9}
-              transparent
-              opacity={wallOpacity}
+              transparent={true}
+              opacity={0.55}
             />
           </mesh>
         ))}
@@ -68,7 +67,7 @@ export default function ProxyRoom({
             <meshStandardMaterial
               color={roomData.ceiling.color || "#f2eee8"}
               roughness={0.9}
-              transparent
+              transparent={true}
               opacity={wallOpacity * 0.7}
             />
           </mesh>

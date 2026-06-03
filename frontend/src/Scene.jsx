@@ -265,17 +265,31 @@ function DetectedPlaceholderModel({ label, size, object }) {
 
       groupRef.current.traverse((child) => {
         if (child.isMesh && child.material) {
-          child.material = child.material.clone();
-          if (color) child.material.color = color;
-          
-          child.material.roughness = roughness;
-          child.material.metalness = metalness;
-          child.material.opacity = opacity;
-          child.material.transparent = opacity < 1.0;
-          
-          if (emissive && child.material.emissive !== undefined) {
-            child.material.emissive = emissive;
-            child.material.emissiveIntensity = emissiveIntensity;
+          let materialToStyle = null;
+          if (Array.isArray(child.material)) {
+            child.material = child.material.map(m => m.clone());
+            materialToStyle = child.material;
+          } else {
+            child.material = child.material.clone();
+            materialToStyle = child.material;
+          }
+
+          const applyProperties = (mat) => {
+            if (color) mat.color = color;
+            mat.roughness = roughness;
+            mat.metalness = metalness;
+            mat.opacity = opacity;
+            mat.transparent = opacity < 1.0;
+            if (emissive && mat.emissive !== undefined) {
+              mat.emissive = emissive;
+              mat.emissiveIntensity = emissiveIntensity;
+            }
+          };
+
+          if (Array.isArray(materialToStyle)) {
+            materialToStyle.forEach(applyProperties);
+          } else {
+            applyProperties(materialToStyle);
           }
         }
       });
@@ -848,7 +862,7 @@ function WalkControls() {
 
 // ─── Placed Furniture — fixed TransformControls ────────────────────────────
 
-function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode }) {
+function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, isHardcodedDemo, viewSettings }) {
   const outerGroupRef = useRef();
   const innerGroupRef = useRef();
   const [ready, setReady] = useState(false);
@@ -863,42 +877,149 @@ function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode }) 
     }
   }, [selected]);
 
+  useEffect(() => {
+    if (innerGroupRef.current) {
+      const typeLower = item.type?.toLowerCase() || '';
+      let categoryColor = '#d6cabc';
+      if (typeLower.includes('sofa') || typeLower.includes('armchair')) categoryColor = '#d6cabc';
+      else if (typeLower.includes('chair') || typeLower.includes('stool') || typeLower.includes('seat')) categoryColor = '#b77745';
+      else if (typeLower.includes('table') || typeLower.includes('desk')) categoryColor = '#f7f3ec';
+      else if (typeLower.includes('bed')) categoryColor = '#d8cfc4';
+      else if (typeLower.includes('cabinet') || typeLower.includes('cupboard') || typeLower.includes('bookshelf') || typeLower.includes('stand')) categoryColor = '#bfa889';
+      else if (typeLower.includes('rug') || typeLower.includes('carpet')) categoryColor = '#b9afa2';
+      
+      const chosenColor = item.color || categoryColor || "#d6cabc";
+      const color = new THREE.Color(chosenColor);
+      
+      const opacity = typeof item.opacity === 'number' ? item.opacity : 0.95;
+      const roughness = typeof item.roughness === 'number' ? item.roughness : 0.65;
+      const metalness = typeof item.metalness === 'number' ? item.metalness : 0.05;
+
+      innerGroupRef.current.traverse((child) => {
+        if (child.isMesh) {
+          // Disable shadows temporarily on added furniture to prevent black screen issues (Requirement 8)
+          child.castShadow = false;
+          child.receiveShadow = false;
+
+          let materialToStyle = null;
+          // Safe material fallback (Requirement 2)
+          if (!child.material) {
+            child.material = new THREE.MeshStandardMaterial();
+            materialToStyle = child.material;
+          } else if (Array.isArray(child.material)) {
+            // Always clone material first, never mutate directly (Requirement 1)
+            child.material = child.material.map(m => m.clone());
+            materialToStyle = child.material;
+          } else {
+            // Always clone material first, never mutate directly (Requirement 1)
+            child.material = child.material.clone();
+            materialToStyle = child.material;
+          }
+
+          const applyProperties = (mat) => {
+            mat.color = color;
+            mat.roughness = roughness;
+            mat.metalness = metalness;
+            mat.opacity = opacity;
+            mat.transparent = opacity < 1.0;
+          };
+
+          if (Array.isArray(materialToStyle)) {
+            materialToStyle.forEach(applyProperties);
+          } else {
+            applyProperties(materialToStyle);
+          }
+        }
+      });
+    }
+  }, [item.color, item.opacity, item.roughness, item.metalness, item.type]);
+
+  const getModelScaleAndOffset = () => {
+    const type = item.type;
+    let scale = [1, 1, 1];
+    let offset = [0, -0.5, 0];
+
+    if (type === 'Cupboard') scale = [1 / 1.05, 1 / 2.0, 1 / 0.54];
+    else if (type === 'Bookshelf') scale = [1 / 0.9, 1 / 2.0, 1 / 0.3];
+    else if (type === 'TVStand') scale = [1 / 1.6, 1 / 0.6, 1 / 0.45];
+    else if (type === 'Mirror') scale = [1 / 0.72, 1 / 1.76, 1 / 0.06];
+    else if (type === 'WallMirror') scale = [1, 1, 1];
+    else if (type === 'Painting') scale = [1 / 1.1, 1 / 1.525, 1 / 0.06];
+    else if (type === 'Light') scale = [1 / 0.26, 1 / 1.61, 1 / 0.26];
+    else if (type === 'PendantLight') {
+      scale = [1 / 0.28, 1 / 1.97, 1 / 0.28];
+      offset = [0, 0.385, 0];
+    }
+    else if (type === 'Bed') scale = [1 / 1.42, 1 / 1.15, 1 / 2.14];
+    else if (type === 'KingBed') scale = [1 / 2.02, 1 / 1.25, 1 / 2.29];
+    else if (type === 'Chair') scale = [1 / 0.52, 1 / 1.16, 1 / 0.52];
+    else if (type === 'Armchair') scale = [1 / 0.82, 1 / 1.22, 1 / 0.8];
+    else if (type === 'Sofa') scale = [1 / 2.1, 1 / 0.9, 1 / 0.92];
+    else if (type === 'Table') scale = [1 / 1.6, 1 / 0.78, 1 / 0.85];
+    else if (type === 'Desk') scale = [1 / 1.4, 1 / 0.785, 1 / 0.7];
+    else if (type === 'SideTable') scale = [1 / 0.6, 1 / 0.57, 1 / 0.6];
+    else if (type === 'Plant') scale = [1 / 0.44, 1 / 1.06, 1 / 0.44];
+    else if (type === 'Decoration') scale = [1 / 0.32, 1 / 0.62, 1 / 0.32];
+    else if (type === 'Rug') scale = [1 / 2.4, 1 / 0.012, 1 / 1.6];
+
+    return { scale, offset };
+  };
+
+  const { scale: modelScale, offset: modelOffset } = getModelScaleAndOffset();
+  const s = item.size || [1, 1, 1];
+  const groupScale = [s[0] * (item.scale ? item.scale[0] : 1), s[1] * (item.scale ? item.scale[1] : 1), s[2] * (item.scale ? item.scale[2] : 1)];
+
   const handleChange = useCallback(() => {
     const g = innerGroupRef.current;
     if (!g) return;
+    
+    let y = g.position.y;
+    const FLOOR_Y = isHardcodedDemo ? 0 : (viewSettings?.floorHeight || -2);
+    const height = g.scale.y;
+    
+    if (item.type === 'Rug') {
+      y = FLOOR_Y + 0.01;
+    } else if (isPlacedFloorFurniture(item.type)) {
+      y = FLOOR_Y + height / 2;
+    }
+    
+    const originalSize = item.size || [1, 1, 1];
+    const nextScale = [g.scale.x / originalSize[0], g.scale.y / originalSize[1], g.scale.z / originalSize[2]];
+    
     onUpdate(item.id, {
-      position: [g.position.x, g.position.y, g.position.z],
+      position: [g.position.x, y, g.position.z],
       rotation: [g.rotation.x, g.rotation.y, g.rotation.z],
-      scale: [g.scale.x, g.scale.y, g.scale.z],
+      scale: nextScale,
     });
-  }, [item.id, onUpdate]);
+  }, [item.id, item.type, item.size, onUpdate, isHardcodedDemo, viewSettings]);
 
   const innerMesh = (
     <group
       ref={innerGroupRef}
+      name={`placed-furniture-${item.id}`}
       position={item.position || [0, 0, 0]}
       rotation={item.rotation || [0, 0, 0]}
-      scale={item.scale || [1, 1, 1]}
+      scale={groupScale}
       onClick={e => { e.stopPropagation(); onSelect(item.id); }}
     >
-      {renderModel(item.type)}
+      <group scale={modelScale} position={modelOffset}>
+        {renderModel(item.type)}
+      </group>
     </group>
   );
 
-  if (selected && ready && innerGroupRef.current) {
-    return (
-      <group ref={outerGroupRef}>
+  return (
+    <group ref={outerGroupRef}>
+      {selected && ready && innerGroupRef.current && (
         <TransformControls
           object={innerGroupRef.current}
           mode={transformMode || 'translate'}
           onMouseUp={handleChange}
         />
-        {innerMesh}
-      </group>
-    );
-  }
-
-  return innerMesh;
+      )}
+      {innerMesh}
+    </group>
+  );
 }
 
 // ─── Camera safety + AutoFit ────────────────────────────────────────────────
@@ -916,19 +1037,33 @@ function CameraSetup() {
 
 function AutoFitController({ stats, fitTrigger }) {
   const { camera, controls } = useThree();
+  const lastStatsRef = useRef(null);
+  const lastFitTriggerRef = useRef(null);
+
   useEffect(() => {
     if (!stats) return;
+    if (lastStatsRef.current === stats && lastFitTriggerRef.current === fitTrigger) {
+      return;
+    }
     camera.position.set(0, 3.5, 9);
     camera.lookAt(0, 0, 0);
     if (controls) { controls.target.set(0, 0, 0); controls.update(); }
-  }, [stats, fitTrigger]);
+    lastStatsRef.current = stats;
+    lastFitTriggerRef.current = fitTrigger;
+  }, [stats, fitTrigger, camera, controls]);
   return null;
 }
 
 function DemoCameraController({ isHardcodedDemo, cameraStart }) {
   const { camera, controls } = useThree();
+  const lastKeyRef = useRef(null);
+
   useEffect(() => {
     if (!isHardcodedDemo || !cameraStart) return;
+    const key = JSON.stringify(cameraStart);
+    if (lastKeyRef.current === key) {
+      return;
+    }
     const pos = cameraStart.position || [0, 1.6, 5.7];
     const target = cameraStart.target || [0, 1.1, -1.2];
     const fov = cameraStart.fov || 58;
@@ -939,6 +1074,7 @@ function DemoCameraController({ isHardcodedDemo, cameraStart }) {
       controls.target.set(target[0], target[1], target[2]);
       controls.update();
     }
+    lastKeyRef.current = key;
   }, [isHardcodedDemo, cameraStart, camera, controls]);
   return null;
 }
@@ -981,6 +1117,262 @@ function snapToWall(obj, room) {
   }
 
   return obj;
+}
+
+const FURNITURE_HEIGHTS = {
+  Sofa: 0.9,
+  Armchair: 1.22,
+  Bed: 1.15,
+  KingBed: 1.25,
+  Chair: 1.16,
+  Table: 0.78,
+  Desk: 0.785,
+  SideTable: 0.57,
+  Cupboard: 2.0,
+  Bookshelf: 2.0,
+  TVStand: 0.6,
+  Plant: 1.06,
+  Decoration: 0.62,
+  Rug: 0.012,
+  Mirror: 1.76,
+  Painting: 1.525,
+  Light: 1.61,
+  PendantLight: 1.97
+};
+
+function isPlacedFloorFurniture(type) {
+  return !['Mirror', 'Painting', 'PendantLight'].includes(type);
+}
+
+// ─── Add Furniture Auditor (Urgent Debug) ──────────────────────────────────
+function AddFurnitureAuditor({ placedItems, selectedId }) {
+  const { scene, camera, gl, controls } = useThree();
+  const prevCountRef = useRef(0);
+
+  useEffect(() => {
+    const count = placedItems ? placedItems.length : 0;
+    const prevCount = prevCountRef.current;
+
+    if (count !== prevCount) {
+      console.log("ADD FURNITURE START");
+      console.log({
+        placedFurnitureCount: count,
+        selectedObject: selectedId,
+        sceneBackground: scene.background,
+        environment: scene.environment,
+        cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
+        controlsTarget: controls ? [controls.target.x, controls.target.y, controls.target.z] : null
+      });
+
+      // Check lights (Step 2)
+      scene.traverse((obj) => {
+        if (obj.isLight) {
+          console.log(
+            "LIGHT",
+            obj.type,
+            obj.intensity,
+            obj.visible
+          );
+        }
+      });
+
+      // Check environment (Step 7)
+      console.log("scene.environment", scene.environment);
+      console.log("scene.background", scene.background);
+
+      // Check renderer (Step 8)
+      console.log("renderer.toneMappingExposure", gl.toneMappingExposure);
+      console.log("renderer.toneMapping", gl.toneMapping);
+      console.log("renderer.outputColorSpace", gl.outputColorSpace);
+
+      console.log("ADD FURNITURE END");
+    }
+
+    prevCountRef.current = count;
+  }, [placedItems, selectedId, scene, camera, gl, controls]);
+
+  return null;
+}
+
+// ─── Camera Stabilizer (Requirement 3 & 4) ──────────────────────────────────
+function CameraStabilizer({ placedItems }) {
+  const { camera, controls } = useThree();
+  const prevLengthRef = useRef(0);
+  const savedCamPosRef = useRef(new THREE.Vector3());
+  const savedTargetRef = useRef(new THREE.Vector3());
+
+  useFrame(() => {
+    if (camera && (!placedItems || placedItems.length === prevLengthRef.current)) {
+      savedCamPosRef.current.copy(camera.position);
+      if (controls) {
+        savedTargetRef.current.copy(controls.target);
+      }
+    }
+  });
+
+  useEffect(() => {
+    const currentLength = placedItems ? placedItems.length : 0;
+    
+    if (currentLength > prevLengthRef.current && prevLengthRef.current > 0) {
+      const latestItem = placedItems[placedItems.length - 1];
+      if (latestItem && latestItem.position) {
+        camera.position.copy(savedCamPosRef.current);
+        if (controls) {
+          controls.target.copy(savedTargetRef.current);
+        }
+
+        const itemPos = new THREE.Vector3(...latestItem.position);
+        const camToItem = new THREE.Vector3().copy(camera.position).sub(itemPos);
+        const distance = camToItem.length();
+        const minDistance = 2.0;
+
+        if (distance < minDistance) {
+          const pushDirection = camToItem.lengthSq() > 0.001 
+            ? camToItem.normalize() 
+            : new THREE.Vector3(0, 0.5, 1).normalize();
+          
+          camera.position.copy(itemPos).addScaledVector(pushDirection, minDistance);
+          
+          if (controls) {
+            controls.target.copy(savedTargetRef.current);
+          }
+        }
+        
+        if (controls) {
+          controls.update();
+        }
+      }
+    }
+    
+    prevLengthRef.current = currentLength;
+  }, [placedItems, camera, controls]);
+
+  return null;
+}
+
+// ─── Debug Overlay (Requirement 7) ──────────────────────────────────────────
+function DebugOverlay({ placedItems }) {
+  const { camera, controls } = useThree();
+  const [tick, setTick] = useState(0);
+
+  useFrame(() => {
+    setTick(t => t + 1);
+  });
+
+  if (!placedItems || placedItems.length === 0) return null;
+
+  const latest = placedItems[placedItems.length - 1];
+  const camPosStr = `[${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}]`;
+  const targetStr = controls 
+    ? `[${controls.target.x.toFixed(2)}, ${controls.target.y.toFixed(2)}, ${controls.target.z.toFixed(2)}]`
+    : 'N/A';
+  
+  const itemPosStr = latest.position 
+    ? `[${latest.position[0].toFixed(2)}, ${latest.position[1].toFixed(2)}, ${latest.position[2].toFixed(2)}]`
+    : 'N/A';
+  const itemSizeStr = latest.size 
+    ? `[${latest.size[0].toFixed(2)}, ${latest.size[1].toFixed(2)}, ${latest.size[2].toFixed(2)}]`
+    : 'N/A';
+  const itemScaleStr = latest.scale 
+    ? `[${latest.scale[0].toFixed(2)}, ${latest.scale[1].toFixed(2)}, ${latest.scale[2].toFixed(2)}]`
+    : 'N/A';
+
+  return (
+    <Html style={{ position: 'absolute', top: 20, right: 20, pointerEvents: 'none', userSelect: 'none' }}>
+      <div style={{
+        background: 'rgba(15, 23, 42, 0.85)',
+        color: '#f8fafc',
+        padding: '12px 16px',
+        borderRadius: '10px',
+        fontSize: '11px',
+        fontFamily: 'monospace',
+        border: '1px solid rgba(255, 255, 255, 0.1)',
+        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
+        width: '280px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '6px',
+      }}>
+        <div style={{ fontWeight: 'bold', color: '#38bdf8', marginBottom: '2px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px' }}>
+          3D VIEWPORT CAMERA DEBUG
+        </div>
+        <div><strong>Camera Position:</strong> {camPosStr}</div>
+        <div><strong>Controls Target:</strong> {targetStr}</div>
+        <div style={{ fontWeight: 'bold', color: '#34d399', marginTop: '4px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px' }}>
+          LATEST ADDED OBJECT ({latest.type})
+        </div>
+        <div><strong>Position:</strong> {itemPosStr}</div>
+        <div><strong>Size:</strong> {itemSizeStr}</div>
+        <div><strong>Scale:</strong> {itemScaleStr}</div>
+      </div>
+    </Html>
+  );
+}
+
+// ─── Setup Renderer (Requirement 5) ─────────────────────────────────────────
+function SetupRenderer() {
+  const { gl } = useThree();
+  useEffect(() => {
+    gl.outputColorSpace = THREE.SRGBColorSpace;
+    gl.toneMapping = THREE.ACESFilmicToneMapping;
+    gl.toneMappingExposure = 1.2;
+  }, [gl]);
+  return null;
+}
+
+// ─── Debug Logger (Requirement 7) ───────────────────────────────────────────
+function DebugLogger({ placedItems }) {
+  const { scene, gl } = useThree();
+
+  useEffect(() => {
+    if (placedItems && placedItems.length > 0) {
+      console.log("lights mounted");
+      console.log("scene background", scene.background);
+      console.log("renderer exposure", gl.toneMappingExposure);
+      
+      const dumpHierarchy = (obj, indent = 0) => {
+        let name = obj.name || obj.type || obj.constructor.name;
+        console.log(" ".repeat(indent * 2) + `- ${name} [type: ${obj.constructor.name}, id: ${obj.id}]`);
+        if (obj.children) {
+          // Guard against cycles in logging if there are any
+          obj.children.forEach(c => {
+            if (indent < 10) dumpHierarchy(c, indent + 1);
+          });
+        }
+      };
+      console.log("SCENE HIERARCHY DUMP:");
+      try {
+        dumpHierarchy(scene);
+      } catch (e) {
+        console.error("Hierarchy dump failed:", e);
+      }
+      
+      let foundMat = null;
+      scene.traverse((child) => {
+        if (child.isMesh) {
+          let parent = child.parent;
+          while (parent) {
+            if (parent.name && parent.name.startsWith("placed-furniture-")) {
+              if (child.material) {
+                foundMat = Array.isArray(child.material) ? child.material[0] : child.material;
+                break;
+              }
+            }
+            parent = parent.parent;
+          }
+          if (foundMat) return;
+        }
+      });
+
+      if (foundMat) {
+        console.log("placed furniture material", foundMat.color, foundMat.opacity);
+      } else {
+        console.log("placed furniture material", undefined, undefined);
+      }
+    }
+  }, [placedItems, scene, gl]);
+
+  return null;
 }
 
 // ─── Main Scene export ─────────────────────────────────────────────────────
@@ -1479,18 +1871,31 @@ export default function Scene({
   };
 
   return (
-    <Canvas camera={{ position: [0, 3, 9], fov: 58 }} gl={{ antialias: true, alpha: false }} shadows>
+    <Canvas camera={{ position: [0, 3, 9], fov: 58, near: 0.01, far: 1000 }} gl={{ antialias: true, alpha: false, outputColorSpace: THREE.SRGBColorSpace, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.2 }} shadows>
+      <SetupRenderer />
+      <AddFurnitureAuditor placedItems={placedItems} selectedId={selectedId} />
+      <DebugLogger placedItems={placedItems} />
+      <CameraStabilizer placedItems={placedItems} />
+      <DebugOverlay placedItems={placedItems} />
       <KeyboardHandler selectedId={selectedId} onDelete={onDeleteSelected} onTransformMode={onTransformModeChange} />
       <AutoFitController stats={pcStats} fitTrigger={fitTrigger} />
       <DemoCameraController isHardcodedDemo={isHardcodedDemo} cameraStart={demoSceneData?.camera_start} />
       <CameraSetup />
-      <color attach="background" args={['#080b12']} />
-      <ambientLight
-        intensity={isHardcodedDemo ? (demoSceneData?.lighting?.ambient?.intensity || 0.55) : 0.5}
-        color={isHardcodedDemo ? (demoSceneData?.lighting?.ambient?.color || "#fff4e6") : undefined}
-      />
-      <directionalLight position={[8, 12, 6]} intensity={isHardcodedDemo ? 0.6 : 1.2} castShadow shadow-mapSize={[2048, 2048]} />
-      <directionalLight position={[-6, 8, -4]} intensity={isHardcodedDemo ? 0.2 : 0.4} />
+      <color attach="background" args={['#0b0f19']} />
+      
+      {isHardcodedDemo ? (
+        <>
+          <ambientLight intensity={0.9} />
+          <hemisphereLight intensity={0.75} />
+          <directionalLight position={[5, 8, 5]} intensity={1.3} />
+        </>
+      ) : (
+        <>
+          <ambientLight intensity={0.5} />
+          <directionalLight position={[8, 12, 6]} intensity={1.2} castShadow shadow-mapSize={[2048, 2048]} />
+          <directionalLight position={[-6, 8, -4]} intensity={0.4} />
+        </>
+      )}
 
       <group position={sceneTransform.position} scale={sceneTransform.scale}>
         {isHardcodedDemo && demoSceneData?.lighting?.fixtures && demoSceneData.lighting.fixtures.map((fixture) => {
@@ -1607,6 +2012,8 @@ export default function Scene({
             onSelect={onSelect}
             onUpdate={onUpdatePlacedItem}
             transformMode={transformMode}
+            isHardcodedDemo={isHardcodedDemo}
+            viewSettings={viewSettings}
           />
         ))}
 

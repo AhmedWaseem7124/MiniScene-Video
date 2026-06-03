@@ -22,6 +22,27 @@ import ProcessingStatus from './ProcessingStatus';
 import LandingHero from './LandingHero';
 import SceneReadyBanner from './SceneReadyBanner';
 
+const FURNITURE_HEIGHTS = {
+  Sofa: 0.9,
+  Armchair: 1.22,
+  Bed: 1.15,
+  KingBed: 1.25,
+  Chair: 1.16,
+  Table: 0.78,
+  Desk: 0.785,
+  SideTable: 0.57,
+  Cupboard: 2.0,
+  Bookshelf: 2.0,
+  TVStand: 0.6,
+  Plant: 1.06,
+  Decoration: 0.62,
+  Rug: 0.012,
+  Mirror: 1.76,
+  Painting: 1.525,
+  Light: 1.61,
+  PendantLight: 1.97
+};
+
 // ─── Canvas Error Boundary (Requirement 9) ──────────────────────────────────
 class CanvasErrorBoundary extends React.Component {
   constructor(props) {
@@ -362,19 +383,75 @@ function App() {
 
   const handleSceneClick = (point) => {
     if (placementItem) {
+      const type = placementItem.type;
+      
+      // Clamp added furniture default sizes (Requirement 5)
+      const defaultSizes = {
+        Sofa: [2.0, 0.8, 0.9],
+        Chair: [0.7, 0.9, 0.7],
+        Table: [1.2, 0.75, 0.8],
+        Bed: [2.0, 0.7, 1.6],
+        Rug: [2.4, 0.012, 1.6]
+      };
+      
+      const size = defaultSizes[type] || [1.0, 1.0, 1.0];
+      const scale = [1, 1, 1];
+      
+      console.log("Added furniture size", size, scale);
+
+      const height = size[1];
+      const FLOOR_Y = isHardcodedDemo ? 0 : (viewSettings.floorHeight || -2);
+      
+      let y = FLOOR_Y;
+      if (type === 'Rug') {
+        y = FLOOR_Y + 0.01;
+      } else if (!['Mirror', 'Painting', 'PendantLight'].includes(type)) {
+        y = FLOOR_Y + height / 2;
+      } else {
+        y = point.y !== undefined ? point.y : (FLOOR_Y + 1.5);
+      }
+
       const newItem = {
         id: Math.random().toString(),
         name: placementItem.name,
         type: placementItem.type,
-        position: [point.x, viewSettings.floorHeight, point.z],
+        position: [point.x, y, point.z],
         rotation: [0, 0, 0],
-        scale: [1, 1, 1],
+        scale: scale,
+        size: size,
       };
       setPlacedItems(prev => [...prev, newItem]);
       setPlacementItem(null);
       setSelectedId(newItem.id);
     }
   };
+
+  useEffect(() => {
+    window.triggerAddFurniture = (x, y, z) => {
+      const type = "Sofa";
+      const size = [2.0, 0.8, 0.9];
+      const scale = [1, 1, 1];
+      const height = size[1];
+      const FLOOR_Y = isHardcodedDemo ? 0 : (viewSettings.floorHeight || -2);
+      let y_coord = FLOOR_Y + height / 2;
+
+      const newItem = {
+        id: "sofa_placed_test",
+        name: "Sofa 3-Seat",
+        type: type,
+        position: [x, y_coord, z],
+        rotation: [0, 0, 0],
+        scale: scale,
+        size: size,
+      };
+      console.log("TRIGGERING ADD FURNITURE MOCK VIA JS DIRECT");
+      setPlacedItems(prev => [...prev, newItem]);
+      setSelectedId(newItem.id);
+    };
+    return () => {
+      delete window.triggerAddFurniture;
+    };
+  }, [isHardcodedDemo, viewSettings.floorHeight]);
 
   const handleAutoPlace = (rec) => {
     const newItem = { id: Math.random().toString(), name: rec.name, type: rec.type, position: rec.position, rotation: rec.rotation, scale: [1, 1, 1] };
