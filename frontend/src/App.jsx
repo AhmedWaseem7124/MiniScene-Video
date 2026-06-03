@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import Scene from './Scene';
 import { AnimatePresence, motion } from 'framer-motion';
-import FurnitureLibrary from './FurnitureLibrary';
+import FurnitureLibrary, { CATALOG } from './FurnitureLibrary';
 import ObjectProperties from './ObjectProperties';
 import ControlsHelp from './ControlsHelp';
 import ViewSettings from './ViewSettings';
@@ -366,7 +366,17 @@ function App() {
 
   const handleDuplicatePlaced = useCallback((item) => {
     if (objects.find(o => o.id === item.id)) return;
-    const newItem = { ...item, id: Math.random().toString(), position: [item.position[0] + 0.6, item.position[1], item.position[2] + 0.3] };
+    const newItem = { 
+      ...item, 
+      id: Math.random().toString(), 
+      position: [item.position[0] + 0.6, item.position[1], item.position[2] + 0.3],
+      primaryColor: item.primaryColor,
+      secondaryColor: item.secondaryColor,
+      accentColor: item.accentColor,
+      color: item.color,
+      material: item.material,
+      placementType: item.placementType
+    };
     setPlacedItems(prev => [...prev, newItem]);
     setSelectedId(newItem.id);
   }, [objects]);
@@ -394,7 +404,7 @@ function App() {
         Rug: [2.4, 0.012, 1.6]
       };
       
-      const size = defaultSizes[type] || [1.0, 1.0, 1.0];
+      const size = placementItem.size || defaultSizes[type] || [1.0, 1.0, 1.0];
       const scale = [1, 1, 1];
       
       console.log("Added furniture size", size, scale);
@@ -411,6 +421,8 @@ function App() {
         y = point.y !== undefined ? point.y : (FLOOR_Y + 1.5);
       }
 
+      const defaultColor = placementItem.defaultColor || '#d6cabc';
+
       const newItem = {
         id: Math.random().toString(),
         name: placementItem.name,
@@ -419,6 +431,12 @@ function App() {
         rotation: [0, 0, 0],
         scale: scale,
         size: size,
+        primaryColor: defaultColor,
+        secondaryColor: defaultColor,
+        accentColor: defaultColor,
+        color: defaultColor,
+        material: placementItem.material || 'matte',
+        placementType: placementItem.placementType || 'floor'
       };
       setPlacedItems(prev => [...prev, newItem]);
       setPlacementItem(null);
@@ -443,6 +461,12 @@ function App() {
         rotation: [0, 0, 0],
         scale: scale,
         size: size,
+        primaryColor: "#2b2b2b",
+        secondaryColor: "#2b2b2b",
+        accentColor: "#2b2b2b",
+        color: "#2b2b2b",
+        material: "leather",
+        placementType: "floor"
       };
       console.log("TRIGGERING ADD FURNITURE MOCK VIA JS DIRECT");
       setPlacedItems(prev => [...prev, newItem]);
@@ -454,7 +478,26 @@ function App() {
   }, [isHardcodedDemo, viewSettings.floorHeight]);
 
   const handleAutoPlace = (rec) => {
-    const newItem = { id: Math.random().toString(), name: rec.name, type: rec.type, position: rec.position, rotation: rec.rotation, scale: [1, 1, 1] };
+    const catalogItem = CATALOG.find(item => item.type === rec.type);
+    const defaultColor = catalogItem?.defaultColor || '#d6cabc';
+    const material = catalogItem?.material || 'matte';
+    const placementType = catalogItem?.placementType || 'floor';
+
+    const newItem = { 
+      id: Math.random().toString(), 
+      name: rec.name, 
+      type: rec.type, 
+      position: rec.position, 
+      rotation: rec.rotation, 
+      scale: [1, 1, 1],
+      size: catalogItem?.size || rec.size || [1.0, 1.0, 1.0],
+      primaryColor: defaultColor,
+      secondaryColor: defaultColor,
+      accentColor: defaultColor,
+      color: defaultColor,
+      material: material,
+      placementType: placementType
+    };
     setPlacedItems(prev => [...prev, newItem]);
     setSelectedId(newItem.id);
     setActiveHoverRec(null);

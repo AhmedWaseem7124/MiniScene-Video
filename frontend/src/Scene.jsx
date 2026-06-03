@@ -862,6 +862,58 @@ function WalkControls() {
 
 // ─── Placed Furniture — fixed TransformControls ────────────────────────────
 
+// ─── Material Presets & Part Types Customization ───────────────────────────
+const MATERIAL_PRESETS = {
+  fabric: { roughness: 0.9, metalness: 0.0, opacity: 0.95 },
+  leather: { roughness: 0.7, metalness: 0.05, opacity: 1.0 },
+  wood: { roughness: 0.5, metalness: 0.05, opacity: 1.0 },
+  metal: { roughness: 0.2, metalness: 0.9, opacity: 1.0 },
+  marble: { roughness: 0.1, metalness: 0.1, opacity: 1.0 },
+  glass: { roughness: 0.1, metalness: 0.9, opacity: 0.4, transparent: true },
+  plastic: { roughness: 0.4, metalness: 0.0, opacity: 0.9 },
+  matte: { roughness: 0.8, metalness: 0.0, opacity: 0.95 },
+  glossy: { roughness: 0.15, metalness: 0.05, opacity: 1.0 }
+};
+
+function getPartType(type, defaultColorHex) {
+  if (!defaultColorHex) return 'primary';
+  const hex = defaultColorHex.toLowerCase().trim();
+  const typeLower = type?.toLowerCase() || '';
+
+  if (typeLower.includes('sofa') || typeLower.includes('armchair')) {
+    if (hex === '#1f2937' || hex === '#1a202c') return 'accent'; // legs
+    if (hex === '#5a6478') return 'secondary'; // cushions
+    return 'primary'; // body / armrests
+  }
+
+  if (typeLower.includes('bed')) {
+    if (hex === '#f1ece6' || hex === '#f5f0ea') return 'accent'; // pillows
+    if (hex === '#e8e0d5' || hex === '#ddd5c8') return 'secondary'; // mattress
+    return 'primary'; // frame / headboard
+  }
+
+  if (typeLower.includes('table') || typeLower.includes('desk') || typeLower.includes('console')) {
+    if (hex === '#a8a29e') return 'accent'; // handles
+    if (hex === '#1c1917' || hex === '#57534e' || hex === '#78716c') return 'secondary'; // legs / frame
+    return 'primary'; // tabletop
+  }
+
+  if (
+    typeLower.includes('cabinet') || 
+    typeLower.includes('cupboard') || 
+    typeLower.includes('bookshelf') || 
+    typeLower.includes('stand') || 
+    typeLower.includes('refrigerator') || 
+    typeLower.includes('oven')
+  ) {
+    if (hex === '#a8a29e' || hex === '#111111' || hex === '#cbd5e1' || hex === '#0c0a09') return 'accent'; // handles/legs
+    if (hex === '#1c1917' || hex === '#44403c' || hex === '#292524' || hex === '#7a4e31' || hex === '#1a1a1a' || hex === '#2d2c2a' || hex === '#60a5fa') return 'secondary'; // shelves/panels/divider
+    return 'primary'; // main body
+  }
+
+  return 'primary';
+}
+
 function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, isHardcodedDemo, viewSettings }) {
   const outerGroupRef = useRef();
   const innerGroupRef = useRef();
@@ -888,18 +940,35 @@ function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, is
       else if (typeLower.includes('cabinet') || typeLower.includes('cupboard') || typeLower.includes('bookshelf') || typeLower.includes('stand')) categoryColor = '#bfa889';
       else if (typeLower.includes('rug') || typeLower.includes('carpet')) categoryColor = '#b9afa2';
       
-      const chosenColor = item.color || categoryColor || "#d6cabc";
-      const color = new THREE.Color(chosenColor);
-      
-      const opacity = typeof item.opacity === 'number' ? item.opacity : 0.95;
-      const roughness = typeof item.roughness === 'number' ? item.roughness : 0.65;
-      const metalness = typeof item.metalness === 'number' ? item.metalness : 0.05;
+      const preset = MATERIAL_PRESETS[item.material] || MATERIAL_PRESETS.matte;
+      const opacity = typeof item.opacity === 'number' ? item.opacity : (preset.opacity ?? 0.95);
+      const roughness = typeof item.roughness === 'number' ? item.roughness : (preset.roughness ?? 0.8);
+      const metalness = typeof item.metalness === 'number' ? item.metalness : (preset.metalness ?? 0.0);
+      const transparent = preset.transparent || opacity < 1.0;
 
       innerGroupRef.current.traverse((child) => {
         if (child.isMesh) {
           // Disable shadows temporarily on added furniture to prevent black screen issues (Requirement 8)
           child.castShadow = false;
           child.receiveShadow = false;
+
+          // Stash original default color in userData for consistent part classification
+          if (child.userData.originalColor === undefined) {
+            child.userData.originalColor = child.material && child.material.color 
+              ? '#' + child.material.color.getHexString() 
+              : '#ffffff';
+          }
+
+          const partType = getPartType(item.type, child.userData.originalColor);
+          let chosenColorHex = item.color || categoryColor || '#ffffff';
+          if (partType === 'primary') {
+            chosenColorHex = item.primaryColor || item.color || categoryColor || '#ffffff';
+          } else if (partType === 'secondary') {
+            chosenColorHex = item.secondaryColor || item.color || categoryColor || '#ffffff';
+          } else if (partType === 'accent') {
+            chosenColorHex = item.accentColor || item.color || categoryColor || '#ffffff';
+          }
+          const colorObj = new THREE.Color(chosenColorHex);
 
           let materialToStyle = null;
           // Safe material fallback (Requirement 2)
@@ -917,11 +986,11 @@ function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, is
           }
 
           const applyProperties = (mat) => {
-            mat.color = color;
+            mat.color = colorObj;
             mat.roughness = roughness;
             mat.metalness = metalness;
             mat.opacity = opacity;
-            mat.transparent = opacity < 1.0;
+            mat.transparent = transparent;
           };
 
           if (Array.isArray(materialToStyle)) {
@@ -932,7 +1001,7 @@ function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, is
         }
       });
     }
-  }, [item.color, item.opacity, item.roughness, item.metalness, item.type]);
+  }, [item.color, item.primaryColor, item.secondaryColor, item.accentColor, item.material, item.opacity, item.roughness, item.metalness, item.type]);
 
   const getModelScaleAndOffset = () => {
     const type = item.type;
