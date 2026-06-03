@@ -961,6 +961,28 @@ function KeyboardHandler({ selectedId, onDelete, onTransformMode }) {
   return null;
 }
 
+// ─── Wall Snap Helper ───────────────────────────────────────────────────────
+function snapToWall(obj, room) {
+  const wall = obj.wall || obj.placement_wall;
+
+  if (wall === "right") {
+    obj.position[0] = room.width / 2 - obj.size[0] / 2;
+    obj.rotation_y = -Math.PI / 2;
+  }
+
+  if (wall === "left") {
+    obj.position[0] = -room.width / 2 + obj.size[0] / 2;
+    obj.rotation_y = Math.PI / 2;
+  }
+
+  if (wall === "back") {
+    obj.position[2] = -room.length / 2 + obj.size[2] / 2;
+    obj.rotation_y = 0;
+  }
+
+  return obj;
+}
+
 // ─── Main Scene export ─────────────────────────────────────────────────────
 
 export default function Scene({
@@ -1069,26 +1091,50 @@ export default function Scene({
       };
 
       return objects.map(obj => {
-        const [w, h, d] = obj.size || obj.box_3d?.size || [1, 1, 1];
-        const raw_pos = obj.position || [0, 0, 0];
-        const rotY = obj.rotation_y !== undefined ? obj.rotation_y : 0;
+        // Clone and apply snapToWall to prevent mutating original state directly
+        const roomObj = { width: roomW, length: roomD, height: roomH };
+        const clonedObj = {
+          ...obj,
+          position: obj.position ? [...obj.position] : [0, 0, 0],
+          size: obj.size ? [...obj.size] : [1, 1, 1],
+          rotation_y: obj.rotation_y !== undefined ? obj.rotation_y : 0
+        };
+        const snappedObj = snapToWall(clonedObj, roomObj);
+
+        const [w, h, d] = snappedObj.size;
+        const raw_pos = snappedObj.position;
+        const rotY = snappedObj.rotation_y;
+
+        const cat = (snappedObj.category || snappedObj.placement_category || 'floor').toLowerCase();
+        const labelLower = (snappedObj.label || '').toLowerCase();
+        
+        const isSuspendedOrSurface = ['upper', 'countertop', 'backsplash', 'stove', 'cooktop', 'sink', 'faucet', 'window', 'oven'].some(c => cat.includes(c) || labelLower.includes(c));
+        const isFurniture = ['bed', 'sofa', 'chair', 'table', 'wardrobe', 'console', 'cabinet', 'bookshelf', 'rug', 'nightstand', 'stool', 'seating', 'appliance', 'bench'].some(c => cat.includes(c) || labelLower.includes(c)) && !isSuspendedOrSurface;
+        
+        const isWallMounted = ['wall_art', 'mirror', 'radiator', 'painting', 'curtain', 'wall_light'].includes(cat) || ['wall_art', 'mirror', 'radiator', 'painting', 'curtain', 'wall_light'].some(c => labelLower.includes(c));
 
         // Snapping system
         let snapX = raw_pos[0];
         let snapZ = raw_pos[2];
 
-        const againstRel = getAgainstRelation(obj.id);
-        if (againstRel) {
-          const targetId = againstRel.target.toLowerCase();
-          if (targetId.includes('left')) {
-            snapX = leftWallX + d / 2;
-          } else if (targetId.includes('right')) {
-            snapX = rightWallX - d / 2;
-          } else if (targetId.includes('front') || (targetId.includes('back') && targetId.includes('window'))) {
-            // In Video 4, the back wall is at negative Z (minimum Z), which is frontWallZ
-            snapZ = frontWallZ + d / 2;
-          } else if (targetId.includes('back') || targetId.includes('entrance')) {
-            snapZ = backWallZ - d / 2;
+        const wall = snappedObj.wall || snappedObj.placement_wall;
+        if (wall) {
+          snapX = raw_pos[0];
+          snapZ = raw_pos[2];
+        } else {
+          const againstRel = getAgainstRelation(snappedObj.id);
+          if (againstRel) {
+            const targetId = againstRel.target.toLowerCase();
+            if (targetId.includes('left')) {
+              snapX = leftWallX + d / 2;
+            } else if (targetId.includes('right')) {
+              snapX = rightWallX - d / 2;
+            } else if (targetId.includes('front') || (targetId.includes('back') && targetId.includes('window'))) {
+              // In Video 4, the back wall is at negative Z (minimum Z), which is frontWallZ
+              snapZ = frontWallZ + d / 2;
+            } else if (targetId.includes('back') || targetId.includes('entrance')) {
+              snapZ = backWallZ - d / 2;
+            }
           }
         }
 
@@ -1101,8 +1147,12 @@ export default function Scene({
         const scaledZ = snapZ * scaleFactor;
 
         // 1. Clamping bounds to prevent clipping (X and Z)
-        const clampedX = Math.max(minX + (w_world * scaleFactor) / 2, Math.min(maxX - (w_world * scaleFactor) / 2, scaledX));
-        const clampedZ = Math.max(minZ + (d_world * scaleFactor) / 2, Math.min(maxZ - (d_world * scaleFactor) / 2, scaledZ));
+        let clampedX = scaledX;
+        let clampedZ = scaledZ;
+        if (!isWallMounted) {
+          clampedX = Math.max(minX + (w_world * scaleFactor) / 2, Math.min(maxX - (w_world * scaleFactor) / 2, scaledX));
+          clampedZ = Math.max(minZ + (d_world * scaleFactor) / 2, Math.min(maxZ - (d_world * scaleFactor) / 2, scaledZ));
+        }
         
         const scaledW = w * scaleFactor;
         const scaledH = h * scaleFactor;
@@ -1112,13 +1162,10 @@ export default function Scene({
         let finalPosY = FLOOR_Y_SCALED + scaledH / 2;
         let finalBaseY = FLOOR_Y_SCALED;
 
-        const cat = (obj.category || obj.placement_category || 'floor').toLowerCase();
-        const labelLower = (obj.label || '').toLowerCase();
-        
-        const isSuspendedOrSurface = ['upper', 'countertop', 'backsplash', 'stove', 'cooktop', 'sink', 'faucet', 'window', 'oven'].some(c => cat.includes(c) || labelLower.includes(c));
-        const isFurniture = ['bed', 'sofa', 'chair', 'table', 'wardrobe', 'console', 'cabinet', 'bookshelf', 'rug', 'nightstand', 'stool', 'seating', 'appliance', 'bench'].some(c => cat.includes(c) || labelLower.includes(c)) && !isSuspendedOrSurface;
-
-        if (isFurniture) {
+        if (isWallMounted) {
+          finalPosY = FLOOR_Y_SCALED + raw_pos[1] * scaleFactor;
+          finalBaseY = finalPosY - scaledH / 2;
+        } else if (isFurniture) {
           if (cat.includes('rug') || labelLower.includes('rug')) {
             finalPosY = FLOOR_Y_SCALED + (0.01 * scaleFactor) + scaledH / 2;
             finalBaseY = FLOOR_Y_SCALED + (0.01 * scaleFactor);
@@ -1129,7 +1176,7 @@ export default function Scene({
         } else if (labelLower.includes('lamp') && !cat.includes('ceiling') && !labelLower.includes('chandelier') && !labelLower.includes('pendant')) {
           // Find if there's a bedside table or other nightstand directly underneath
           const tableBelow = objects.find(other => {
-            if (other.id === obj.id) return false;
+            if (other.id === snappedObj.id) return false;
             const otherCat = (other.category || other.placement_category || '').toLowerCase();
             const otherLabel = (other.label || '').toLowerCase();
             const isTable = otherLabel.includes('table') || otherLabel.includes('nightstand') || otherCat.includes('table') || otherCat.includes('nightstand') || otherLabel.includes('drawer');
@@ -1176,7 +1223,7 @@ export default function Scene({
           finalBaseY = finalPosY - scaledH / 2;
         } else {
           // Pillows, blankets, decors: keep relative Y offset from support
-          const base_y_json = obj.base_position ? obj.base_position[1] : (raw_pos[1] - h / 2);
+          const base_y_json = snappedObj.base_position ? snappedObj.base_position[1] : (raw_pos[1] - h / 2);
           finalPosY = FLOOR_Y_SCALED + raw_pos[1] * scaleFactor;
           finalBaseY = FLOOR_Y_SCALED + base_y_json * scaleFactor;
         }
@@ -1204,18 +1251,20 @@ export default function Scene({
         }
 
         // C. Clamp within room bounds (prevent outside bounds or intersecting walls)
-        const halfW = (w_world * scaleFactor) / 2;
-        const halfD = (d_world * scaleFactor) / 2;
-        if (validatedX - halfW < minX) validatedX = minX + halfW;
-        if (validatedX + halfW > maxX) validatedX = maxX - halfW;
-        if (validatedZ - halfD < minZ) validatedZ = minZ + halfD;
-        if (validatedZ + halfD > maxZ) validatedZ = maxZ - halfD;
+        if (!isWallMounted) {
+          const halfW = (w_world * scaleFactor) / 2;
+          const halfD = (d_world * scaleFactor) / 2;
+          if (validatedX - halfW < minX) validatedX = minX + halfW;
+          if (validatedX + halfW > maxX) validatedX = maxX - halfW;
+          if (validatedZ - halfD < minZ) validatedZ = minZ + halfD;
+          if (validatedZ + halfD > maxZ) validatedZ = maxZ - halfD;
+        }
 
         const basePos = [validatedX, validatedBaseY, validatedZ];
         const centerPos = [validatedX, validatedPosY, validatedZ];
         
         return {
-          ...obj,
+          ...snappedObj,
           isDemo: true,
           placement_category: cat,
           box_3d: {

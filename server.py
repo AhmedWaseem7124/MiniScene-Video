@@ -240,7 +240,7 @@ def process_video():
 
         if is_demo4:
             json_filename = "video4_hardcoded_scene.json"
-            obj_count = 25
+            obj_count = 22
         elif is_demo3:
             json_filename = "video3_hardcoded_scene.json"
             obj_count = 17
