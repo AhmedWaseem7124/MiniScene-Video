@@ -45,16 +45,25 @@ def parse_point_cloud_bounds(ply_path):
                             pass
         if pts:
             pts_np = np.array(pts)
-            min_bound = np.min(pts_np, axis=0)
-            max_bound = np.max(pts_np, axis=0)
-            center = (min_bound + max_bound) / 2
-            size = max_bound - min_bound
+            # Use percentiles to filter out outlier points
+            min_bound = np.percentile(pts_np, 1.0, axis=0)
+            max_bound = np.percentile(pts_np, 99.0, axis=0)
             
-            bounds["min"] = min_bound.tolist()
-            bounds["max"] = max_bound.tolist()
-            bounds["width"] = float(size[0])
-            bounds["height"] = float(size[1])
-            bounds["length"] = float(size[2])
+            raw_w = float(max_bound[0] - min_bound[0])
+            raw_h = float(max_bound[1] - min_bound[1])
+            raw_l = float(max_bound[2] - min_bound[2])
+            
+            clamped_w = np.clip(raw_w, 2.5, 8.0)
+            clamped_h = np.clip(raw_h, 2.2, 3.5)
+            clamped_l = np.clip(raw_l, 2.5, 10.0)
+            
+            center = (min_bound + max_bound) / 2
+            
+            bounds["min"] = [center[0] - clamped_w/2, center[1] - clamped_h/2, center[2] - clamped_l/2]
+            bounds["max"] = [center[0] + clamped_w/2, center[1] + clamped_h/2, center[2] + clamped_l/2]
+            bounds["width"] = clamped_w
+            bounds["height"] = clamped_h
+            bounds["length"] = clamped_l
             bounds["center"] = center.tolist()
     except Exception as e:
         print("Error parsing ply bounds:", e)
@@ -175,6 +184,22 @@ def generate_room_analysis(session_id, session_dir):
     occupied_percentage = min(90, object_count * 5) # rough heuristic
     free_percentage = 100 - occupied_percentage
     
+    # Load calibration metadata
+    obj_path = os.path.join(session_dir, 'objects_3d.json')
+    scale_factor = 1.0
+    scale_source = "estimated_from_point_cloud"
+    scale_confidence = 0.82
+    if os.path.exists(obj_path):
+        try:
+            with open(obj_path, 'r') as f:
+                data = json.load(f)
+                meta = data.get('metadata', {})
+                scale_factor = meta.get('scale_factor', 1.0)
+                scale_source = meta.get('scale_source', 'estimated_from_point_cloud')
+                scale_confidence = meta.get('scale_confidence', 0.82)
+        except:
+            pass
+
     analysis_data = {
         "dimensions": {
             "width": round(bounds["width"], 2),
@@ -184,7 +209,9 @@ def generate_room_analysis(session_id, session_dir):
             "length_m": round(bounds["length"], 2),
             "height_m": round(bounds["height"], 2),
             "floor_area_m2": round(floor_area, 2),
-            "scale_source": "estimated_from_point_cloud",
+            "scale_factor": scale_factor,
+            "scale_source": scale_source,
+            "scale_confidence": scale_confidence,
             "unit": "estimated meters"
         },
         "space": {

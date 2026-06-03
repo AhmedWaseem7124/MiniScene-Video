@@ -38,8 +38,16 @@ export default function CVPanel({ onClose, sessionStats, objectDetectionMetadata
     frames_scanned,
     raw_detections_count,
     final_objects_count,
-    rejection_reasons
+    rejection_reasons,
+    cluster_based_objects,
+    fallback_objects,
+    cluster_percentage,
+    fallback_percentage
   } = objectDetectionMetadata || {};
+
+  const totalPlacements = (cluster_based_objects ?? 0) + (fallback_objects ?? 0);
+  const displayClusterPct = cluster_percentage !== undefined ? cluster_percentage : (totalPlacements > 0 ? Math.round((cluster_based_objects / totalPlacements) * 100) : 0);
+  const displayFallbackPct = fallback_percentage !== undefined ? fallback_percentage : (totalPlacements > 0 ? 100 - displayClusterPct : 0);
 
   return (
     <motion.div
@@ -124,6 +132,18 @@ export default function CVPanel({ onClose, sessionStats, objectDetectionMetadata
                 <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', marginBottom: 2 }}>Final Placed Objects</div>
                 <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#ec4899' }}>{final_objects_count ?? 0}</div>
               </div>
+              {(cluster_based_objects !== undefined || fallback_objects !== undefined) && (
+                <div style={{ background: 'rgba(0,0,0,0.2)', padding: '10px 12px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)', gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Cluster-based objects:</span>
+                    <span style={{ fontWeight: 600, color: '#34d399' }}>{displayClusterPct}% ({cluster_based_objects})</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Fallback objects:</span>
+                    <span style={{ fontWeight: 600, color: '#f87171' }}>{displayFallbackPct}% ({fallback_objects})</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {rejection_reasons && (rejection_reasons.low_confidence > 0 || rejection_reasons.unallowed_class > 0) && (

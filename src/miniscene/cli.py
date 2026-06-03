@@ -16,6 +16,7 @@ from miniscene.cv.objects import (
     refine_objects_with_point_cloud,
     refine_object_placements,
     write_objects_json,
+    estimate_global_scale,
 )
 from miniscene.depth.estimator import DepthEstimator
 from miniscene.io.video import estimate_auto_frame_step, iterate_frames, read_video_meta
@@ -532,8 +533,57 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
 
         if len(objects) > 0:
+            # 1. Estimate global scale
+            scale_factor, scale_source, scale_confidence = estimate_global_scale(objects)
+            print(f"[scale] Estimated global scale: {scale_factor:.3f} using {scale_source} (confidence: {scale_confidence:.2f})")
+            
+            # 2. Scale point cloud coordinates and poses
+            if abs(scale_factor - 1.0) > 1e-4:
+                recon.points_world = recon.points_world * scale_factor
+                for p in poses:
+                    p[:3, 3] *= scale_factor
+                for obj in objects:
+                    obj.position_world = obj.position_world * scale_factor
+                    if getattr(obj, "base_position", None) is not None:
+                        obj.base_position = [v * scale_factor for v in obj.base_position]
+                    if obj.size_m is not None:
+                        obj.size_m = (obj.size_m[0] * scale_factor, obj.size_m[1] * scale_factor, obj.size_m[2] * scale_factor)
+                    obj.distance_m = obj.distance_m * scale_factor
+
+            # 3. Save scale metadata
+            metadata["scale_factor"] = scale_factor
+            metadata["scale_source"] = scale_source
+            metadata["scale_confidence"] = scale_confidence
+
             ground_y = estimate_ground_plane(recon.points_world)
-            objects = refine_objects_with_point_cloud(objects, recon.points_world)
+            objects = refine_objects_with_point_cloud(
+                objects,
+                recon.points_world,
+                poses_world_from_cam=poses,
+                intrinsics=intrinsics
+            )
+            
+            # Calculate cluster-based vs fallback-based counts
+            cluster_count = sum(1 for o in objects if getattr(o, "placement_mode", "") == "point_cloud_cluster")
+            fallback_count = sum(1 for o in objects if getattr(o, "placement_mode", "") == "fallback_estimated")
+            total_count = len(objects)
+            
+            metadata["cluster_based_objects"] = cluster_count
+            metadata["fallback_objects"] = fallback_count
+            
+            if total_count > 0:
+                cluster_pct = int(round((cluster_count / total_count) * 100))
+                fallback_pct = 100 - cluster_pct
+            else:
+                cluster_pct = 0
+                fallback_pct = 0
+                
+            metadata["cluster_percentage"] = cluster_pct
+            metadata["fallback_percentage"] = fallback_pct
+            
+            print(f"[placement] Cluster-based objects: {cluster_count} ({cluster_pct}%)")
+            print(f"[placement] Fallback objects: {fallback_count} ({fallback_pct}%)")
+
             objects = align_objects_to_ground(objects, ground_y)
             objects = refine_object_placements(
                 objects,

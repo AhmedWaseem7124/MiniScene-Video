@@ -14,6 +14,25 @@ import WalkableOverlay from './WalkableOverlay';
 import CVOverlay from './CVOverlay';
 import { processPointCloud } from './RepairEngine';
 
+// ─── Radial Gradient Shadow Texture Generator (Requirement 9) ────────────────
+const createRadialShadowTexture = () => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  
+  const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gradient.addColorStop(0, 'rgba(0, 0, 0, 0.7)');
+  gradient.addColorStop(0.5, 'rgba(0, 0, 0, 0.35)');
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 64, 64);
+  
+  const texture = new THREE.CanvasTexture(canvas);
+  return texture;
+};
+
 // ─── Error Boundary ────────────────────────────────────────────────────────
 
 class ErrorBoundary extends React.Component {
@@ -35,17 +54,24 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
   const [geometry, setGeometry] = useState(null);
   const [status, setStatus] = useState('Loading point cloud...');
 
+  console.log("PointCloud URL:", pointCloudUrl);
+
   useEffect(() => {
     if (!pointCloudUrl) {
       setStatus('Waiting for point cloud data...');
       return;
     }
     let active = true;
+    console.log("PLY fetch started");
     setStatus('Loading point cloud...');
     setGeometry(null);
 
     fetch(pointCloudUrl)
-      .then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.arrayBuffer(); })
+      .then(res => { 
+        console.log("PLY fetch complete");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`); 
+        return res.arrayBuffer(); 
+      })
       .then(buffer => {
         if (!active) return;
         setStatus('Parsing point cloud...');
@@ -58,8 +84,7 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
           const bbox = parsed.boundingBox;
           const count = parsed.attributes.position.count;
           
-          console.log("Geometry vertices:", count);
-          console.log("PointCloud: geometry loaded");
+          console.log("PLY parsed vertices:", count);
           
           setGeometry(parsed);
           setStatus(`Loaded: ${count} vertices`);
@@ -69,8 +94,8 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
             const size = new THREE.Vector3();
             bbox.getCenter(center);
             bbox.getSize(size);
+            console.log("Calling onLoad");
             onLoad({ center, size, count, min: bbox.min, max: bbox.max });
-            console.log("PointCloud: onLoad fired");
           }
         } catch {
           // ASCII fallback
@@ -106,8 +131,7 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
           const bbox = geom.boundingBox;
           const count = vertexCount;
           
-          console.log("Geometry vertices:", count);
-          console.log("PointCloud: geometry loaded (fallback)");
+          console.log("PLY parsed vertices (fallback):", count);
           
           setGeometry(geom);
           setStatus(`Loaded (fallback): ${vertexCount} vertices`);
@@ -117,12 +141,27 @@ function PointCloud({ settings, removedObjects, repairMode, onRepairAnalyticsUpd
             const size = new THREE.Vector3();
             bbox.getCenter(center);
             bbox.getSize(size);
+            console.log("Calling onLoad");
             onLoad({ center, size, count, min: bbox.min, max: bbox.max });
-            console.log("PointCloud: onLoad fired");
           }
         }
       })
-      .catch(err => { if (active) setStatus(`Error: ${err.message}`); });
+      .catch(err => { 
+        console.error("PointCloud load failed:", err);
+        if (active) {
+          setStatus(`Error: ${err.message}`);
+          if (onLoad) {
+            console.warn("Calling onLoad fallback due to loading error");
+            onLoad({
+              center: new THREE.Vector3(0, 0, 0),
+              size: new THREE.Vector3(5, 3, 5),
+              count: 0,
+              min: new THREE.Vector3(-2.5, -1.5, -2.5),
+              max: new THREE.Vector3(2.5, 1.5, 2.5)
+            });
+          }
+        }
+      });
 
     return () => { active = false; };
   }, [pointCloudUrl]);
@@ -210,32 +249,178 @@ const LABEL_TO_MODEL_TYPE = {
   door:           'Mirror',
 };
 
-function DetectedPlaceholderModel({ label, size }) {
-  const modelType = LABEL_TO_MODEL_TYPE[label?.toLowerCase()];
-  if (!modelType) {
-    // Generic semi-transparent box for unknown labels
-    return (
-      <mesh>
-        <boxGeometry args={size || [0.8, 0.8, 0.8]} />
-        <meshStandardMaterial color="#6366f1" transparent opacity={0.18} wireframe={false} />
-      </mesh>
-    );
-  }
-  // Render model at a small scale so it fits within the box bounds
+function DetectedPlaceholderModel({ label, size, object }) {
+  const labelLower = label?.toLowerCase() || '';
   const s = size || [1, 1, 1];
-  const scaleFactor = Math.min(s[0], s[1], s[2]) * 0.9;
+  const groupRef = useRef();
+
+  useEffect(() => {
+    if (groupRef.current) {
+      const color = object?.color ? new THREE.Color(object.color) : null;
+      const opacity = typeof object?.opacity === 'number' ? object.opacity : 1.0;
+      const roughness = typeof object?.roughness === 'number' ? object.roughness : 0.65;
+      const metalness = typeof object?.metalness === 'number' ? object.metalness : 0.05;
+      const emissive = object?.emissive ? new THREE.Color(object.emissive) : null;
+      const emissiveIntensity = typeof object?.emissiveIntensity === 'number' ? object.emissiveIntensity : 0;
+
+      groupRef.current.traverse((child) => {
+        if (child.isMesh && child.material) {
+          child.material = child.material.clone();
+          if (color) child.material.color = color;
+          
+          child.material.roughness = roughness;
+          child.material.metalness = metalness;
+          child.material.opacity = opacity;
+          child.material.transparent = opacity < 1.0;
+          
+          if (emissive && child.material.emissive !== undefined) {
+            child.material.emissive = emissive;
+            child.material.emissiveIntensity = emissiveIntensity;
+          }
+        }
+      });
+    }
+  }, [object]);
+
+  const getModel = () => {
+    // Curtains
+    if (labelLower.includes('curtain')) {
+      return renderModel('Curtain');
+    }
+
+    // Bed and frame
+    if (labelLower.includes('king')) {
+      return renderModel('KingBed');
+    }
+    if (labelLower.includes('bed_frame') || labelLower.includes('bedding') || (labelLower.includes('bed') && !labelLower.includes('side'))) {
+      return renderModel('Bed');
+    }
+
+    // Nightstand / Bedside table
+    if (labelLower.includes('nightstand') || labelLower.includes('bedside') || labelLower.includes('drawer')) {
+      return renderModel('BedsideTable');
+    }
+
+    // Kitchen specific models
+    if (labelLower.includes('refrigerator') || labelLower.includes('fridge')) {
+      return renderModel('Refrigerator');
+    }
+    if (labelLower.includes('oven')) {
+      return renderModel('OvenStack');
+    }
+    if (labelLower.includes('display_cabinet') || (labelLower.includes('display') && labelLower.includes('cabinet'))) {
+      return renderModel('DisplayCabinet');
+    }
+    if (labelLower.includes('kitchen_cabinet') || labelLower.includes('lower_kitchen') || labelLower.includes('base_cabinet') || labelLower.includes('cabinet_main')) {
+      return renderModel('KitchenCabinet');
+    }
+
+    // Wardrobe
+    if (labelLower.includes('wardrobe')) {
+      return renderModel('Wardrobe');
+    }
+
+    // Console
+    if (labelLower.includes('console') || labelLower.includes('vanity')) {
+      return renderModel('Console');
+    }
+
+    // Mirror
+    if (labelLower.includes('mirror')) {
+      return renderModel('WallMirror');
+    }
+
+    // Pendant Light
+    if (labelLower.includes('pendant_light') || labelLower.includes('pendant')) {
+      return renderModel('PendantLight');
+    }
+
+    // Rug
+    if (labelLower.includes('rug') || labelLower.includes('carpet')) {
+      return renderModel('Rug');
+    }
+
+    // Lounge seating
+    if (labelLower.includes('lounge')) {
+      return renderModel('Armchair');
+    }
+
+    // Custom simple decor boxes for pillows, books, blankets, cups, frames
+    if (labelLower.includes('pillow') || labelLower.includes('book') || labelLower.includes('blanket') || labelLower.includes('magazine') || labelLower.includes('decor') || labelLower.includes('throw') || labelLower.includes('vase') || labelLower.includes('cup') || labelLower.includes('frame')) {
+      return (
+        <mesh>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={object?.color || "#c59a72"} roughness={0.8} />
+        </mesh>
+      );
+    }
+
+    // TV Wall or TV Stand
+    if (labelLower.includes('tv_wall') || labelLower.includes('tv') || labelLower.includes('screen')) {
+      return renderModel('TVStand');
+    }
+
+    // Cabinet/Cupboard
+    if (labelLower.includes('cabinet') || labelLower.includes('cupboard')) {
+      return renderModel('Cupboard');
+    }
+
+    // Chandelier or ceiling light / sconce
+    if (labelLower.includes('chandelier') || labelLower.includes('ceiling_light') || labelLower.includes('light') || labelLower.includes('lamp') || labelLower.includes('sconce')) {
+      return renderModel('Light');
+    }
+
+    // Sofa, sectional, chaise
+    if (labelLower.includes('sofa') || labelLower.includes('sectional') || labelLower.includes('chaise')) {
+      return renderModel('Sofa');
+    }
+
+    // Coffee table, side table, table
+    if (labelLower.includes('table')) {
+      return renderModel('Table');
+    }
+
+    // Chair, armchair
+    if (labelLower.includes('chair') || labelLower.includes('armchair') || labelLower.includes('stool') || labelLower.includes('ottoman')) {
+      return renderModel('Chair');
+    }
+
+    // Painting, wall art
+    if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('canvas') || labelLower.includes('art')) {
+      return renderModel('Painting');
+    }
+
+    const modelType = LABEL_TO_MODEL_TYPE[labelLower];
+    if (!modelType) {
+      return (
+        <mesh>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={object?.color || "#6366f1"} transparent opacity={0.3} />
+        </mesh>
+      );
+    }
+
+    return renderModel(modelType);
+  };
+
   return (
-    <group scale={[scaleFactor, scaleFactor, scaleFactor]}>
-      {renderModel(modelType)}
+    <group ref={groupRef} scale={s}>
+      {getModel()}
     </group>
   );
 }
 
 // ─── Detected Bounding Box ─────────────────────────────────────────────────
 
-function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
+function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTexture, roomBounds }) {
+  if (!object || !object.box_3d || !Array.isArray(object.box_3d.center) || !Array.isArray(object.box_3d.size)) {
+    return null;
+  }
   const [x, y, z] = object.box_3d.center;
-  const [w, h, d] = object.box_3d.size;
+  const [w_raw, h_raw, d_raw] = object.box_3d.size;
+  const w = (typeof w_raw === 'number' && !isNaN(w_raw) && w_raw > 0) ? w_raw : 1.0;
+  const h = (typeof h_raw === 'number' && !isNaN(h_raw) && h_raw > 0) ? h_raw : 1.0;
+  const d = (typeof d_raw === 'number' && !isNaN(d_raw) && d_raw > 0) ? d_raw : 1.0;
   const [hovered, setHovered] = useState(false);
   useCursor(hovered);
 
@@ -245,11 +430,15 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
 
   const isEstimated = object.placement_quality === 'estimated';
   const category = object.placement_category || 'floor';
+  
+  const catLower = category?.toLowerCase();
+  const isFloorObject = ['floor', 'seating', 'table', 'chair', 'console', 'cupboard', 'wardrobe', 'cabinet', 'plant', 'sofa', 'desk', 'armchair', 'decor'].includes(catLower) || !['wall', 'ceiling', 'wall_art', 'painting', 'curtain', 'opening', 'wall_light', 'ceiling_light', 'window', 'door'].includes(catLower);
+
   const boxColor = selected 
     ? '#6366f1' 
     : hovered 
       ? (isEstimated ? '#f43f5e' : '#818cf8') 
-      : (isEstimated ? '#fda4af' : '#06b6d4');
+      : (object.color || (isEstimated ? '#fda4af' : '#06b6d4'));
 
   const lineRef = useRef();
   useEffect(() => {
@@ -266,12 +455,29 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
   // For debug output:
   const [x_scene, y_scene, z_scene] = object.converted_center || [x, -y, -z];
   const floorY = viewSettings?.floorHeight || -2;
+  const [minX, maxX, minZ, maxZ] = roomBounds || [-5, 5, -5, 5];
 
   return (
     <group position={pos} rotation={[0, rotY, 0]}>
+      {/* Red Cube at object origin (Requirement 7) */}
+      {viewSettings?.showObjectDebug && (
+        <mesh position={[0, 0, 0]} renderOrder={9999}>
+          <boxGeometry args={[0.08, 0.08, 0.08]} />
+          <meshBasicMaterial color="#ef4444" depthTest={false} transparent opacity={0.95} />
+        </mesh>
+      )}
+
+      {/* Floor Contact Shadow (Requirement 9) */}
+      {isFloorObject && shadowTexture && (
+        <mesh position={[0, 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <planeGeometry args={[w * 1.2, d * 1.2]} />
+          <meshBasicMaterial map={shadowTexture} transparent opacity={object.opacity ? object.opacity * 0.75 : 0.7} depthWrite={false} />
+        </mesh>
+      )}
+
       {/* Placeholder model */}
-      <group position={[0, h / 2, 0]}>
-        <DetectedPlaceholderModel label={label} size={[w, h, d]} />
+      <group position={[0, 0, 0]}>
+        <DetectedPlaceholderModel label={label} size={[w, h, d]} object={object} />
       </group>
 
       {/* Semi-transparent bounding box */}
@@ -309,91 +515,137 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings }) {
         </lineSegments>
       )}
 
-      {/* Floating HTML label */}
-      <Html
-        position={[0, h + 0.25, 0]}
-        center
-        distanceFactor={8}
-        style={{ pointerEvents: 'none', userSelect: 'none' }}
-      >
-        <div style={{
-          background: selected 
-            ? 'rgba(99,102,241,0.92)' 
-            : (isEstimated ? 'rgba(244,63,94,0.85)' : 'rgba(6,182,212,0.88)'),
-          color: 'white',
-          padding: '4px 10px',
-          borderRadius: 6,
-          fontSize: 11,
-          fontFamily: "'Outfit', sans-serif",
-          fontWeight: 700,
-          whiteSpace: 'nowrap',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
-          border: `1px solid ${selected 
-            ? 'rgba(165,180,252,0.5)' 
-            : (isEstimated ? 'rgba(251,113,133,0.4)' : 'rgba(103,232,249,0.4)')}`,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span>{label}</span>
-            <span style={{
-              background: object.source === 'heuristic' ? 'rgba(249,115,22,0.9)' : 'rgba(6,182,212,0.9)',
-              padding: '2px 6px',
-              borderRadius: 4,
-              fontSize: '0.6rem',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              fontWeight: 800
-            }}>
-              {object.source === 'heuristic' ? 'HEURISTIC' : 'YOLO'}
-            </span>
-            <span style={{
-              background: category === 'ceiling' 
-                ? 'rgba(236, 72, 153, 0.95)' 
-                : category === 'wall' 
-                  ? 'rgba(168, 85, 247, 0.95)' 
-                  : 'rgba(59, 130, 246, 0.95)',
-              padding: '2px 6px',
-              borderRadius: 4,
-              fontSize: '0.6rem',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              fontWeight: 800
-            }}>
-              {category}
-            </span>
-            {object.placement_quality && (
+      {/* Dark thin outline for all objects (Requirement 4) */}
+      <lineSegments position={[0, h / 2, 0]}>
+        <edgesGeometry args={[new THREE.BoxGeometry(w, h, d)]} />
+        <lineBasicMaterial color="#1a1a1a" transparent opacity={0.45} />
+      </lineSegments>
+
+      {/* Floating HTML label (Requirement 7) */}
+      {(viewSettings?.showLabels || selected || viewSettings?.showObjectDebug) && (
+        <Html
+          position={[0, h + 0.35, 0]}
+          center
+          distanceFactor={8}
+          style={{ pointerEvents: 'none', userSelect: 'none' }}
+        >
+        {object.isDemo ? (
+          <div style={{
+            background: selected ? 'rgba(99,102,241,0.92)' : 'rgba(6,182,212,0.88)',
+            color: 'white',
+            padding: '4px 10px',
+            borderRadius: 6,
+            fontSize: 11,
+            fontFamily: "'Outfit', sans-serif",
+            fontWeight: 700,
+            whiteSpace: 'nowrap',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+            border: `1px solid ${selected ? 'rgba(165,180,252,0.5)' : 'rgba(103,232,249,0.4)'}`,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ textTransform: 'capitalize' }}>{label.replace(/_/g, ' ')}</span>
+              {confPct > 0 && (
+                <span style={{ fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
+                  {confPct}%
+                </span>
+              )}
+            </div>
+            {viewSettings?.showObjectDebug && (
+              <div style={{ marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.2)', fontSize: '0.68rem', fontWeight: 400, textAlign: 'left', lineHeight: '1.25', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <div>Object Name: {label.replace(/_/g, ' ')}</div>
+                <div>Floor Y: {floorY.toFixed(3)}</div>
+                <div>Object Height: {h.toFixed(3)}</div>
+                <div>Final Y: {y.toFixed(3)}</div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{
+            background: selected 
+              ? 'rgba(99,102,241,0.92)' 
+              : (isEstimated ? 'rgba(244,63,94,0.85)' : 'rgba(6,182,212,0.88)'),
+            color: 'white',
+            padding: '4px 10px',
+            borderRadius: 6,
+            fontSize: 11,
+            fontFamily: "'Outfit', sans-serif",
+            fontWeight: 700,
+            whiteSpace: 'nowrap',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+            border: `1px solid ${selected 
+              ? 'rgba(165,180,252,0.5)' 
+              : (isEstimated ? 'rgba(251,113,133,0.4)' : 'rgba(103,232,249,0.4)')}`,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span>{label}</span>
               <span style={{
-                background: object.placement_quality === 'wall-snapped' 
-                  ? 'rgba(168,85,247,0.85)' 
-                  : object.placement_quality === 'floor-snapped' 
-                    ? 'rgba(16,185,129,0.85)' 
-                    : 'rgba(0,0,0,0.25)',
+                background: object.source === 'heuristic' ? 'rgba(249,115,22,0.9)' : 'rgba(6,182,212,0.9)',
                 padding: '2px 6px',
                 borderRadius: 4,
                 fontSize: '0.6rem',
                 textTransform: 'uppercase',
                 letterSpacing: '0.05em',
-                fontWeight: 650
+                fontWeight: 800
               }}>
-                {object.placement_quality.replace('-', ' ')}
+                {object.source === 'heuristic' ? 'HEURISTIC' : 'YOLO'}
               </span>
-            )}
-            {confPct > 0 && !isEstimated && (
-              <span style={{ fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
-                {confPct}%
+              <span style={{
+                background: category === 'ceiling' 
+                  ? 'rgba(236, 72, 153, 0.95)' 
+                  : category === 'wall' 
+                    ? 'rgba(168, 85, 247, 0.95)' 
+                    : 'rgba(59, 130, 246, 0.95)',
+                padding: '2px 6px',
+                borderRadius: 4,
+                fontSize: '0.6rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                fontWeight: 800
+              }}>
+                {category}
               </span>
+              {object.placement_quality && (
+                <span style={{
+                  background: object.placement_quality === 'wall-snapped' 
+                    ? 'rgba(168,85,247,0.85)' 
+                    : object.placement_quality === 'floor-snapped' 
+                      ? 'rgba(16,185,129,0.85)' 
+                      : 'rgba(0,0,0,0.25)',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  fontSize: '0.6rem',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  fontWeight: 650
+                }}>
+                  {object.placement_quality.replace('-', ' ')}
+                </span>
+              )}
+              {confPct > 0 && !isEstimated && (
+                <span style={{ fontWeight: 400, opacity: 0.85, fontSize: 10 }}>
+                  {confPct}%
+                </span>
+              )}
+            </div>
+            {viewSettings?.showObjectDebug && (
+              <div style={{ marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.2)', fontSize: '0.68rem', fontWeight: 400, textAlign: 'left', lineHeight: '1.25', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <div>Object Name: {label}</div>
+                <div>Floor Y: {floorY.toFixed(3)}</div>
+                <div>Object Height: {h.toFixed(3)}</div>
+                <div>Final Y: {y.toFixed(3)}</div>
+                <div>BBox 2D Size: {object.bbox_2d ? `[${object.bbox_2d[2] - object.bbox_2d[0]}x${object.bbox_2d[3] - object.bbox_2d[1]}] px` : 'N/A'}</div>
+                <div>Est. Size: {object.estimated_size ? `[${object.estimated_size.map(n => n.toFixed(2)).join(', ')}] m` : 'N/A'}</div>
+                <div>Final Size: [{w.toFixed(2)}, {h.toFixed(2)}, {d.toFixed(2)}] m</div>
+                <div>Scale Source: {object.scale_source || 'estimated_from_point_cloud'}</div>
+                <div>Final Position: [{pos.map(n => n.toFixed(2)).join(', ')}]</div>
+                <div>Rotation Y: {object.box_3d?.rotationY?.toFixed(2)} rad</div>
+                <div>Facing Reason: {object.placement_reason || 'N/A'}</div>
+              </div>
             )}
           </div>
-          {viewSettings?.showObjectDebug && (
-            <div style={{ marginTop: 4, paddingTop: 4, borderTop: '1px solid rgba(255,255,255,0.2)', fontSize: '0.7rem', fontWeight: 400, textAlign: 'left', lineHeight: '1.2' }}>
-              <div>Raw backend: [{object.raw_center?.map(n => n.toFixed(2)).join(', ')}]</div>
-              <div>Conv scene: [{x_scene.toFixed(2)}, {y_scene.toFixed(2)}, {z_scene.toFixed(2)}]</div>
-              <div>Floor H: {floorY.toFixed(2)}</div>
-              <div>Size: [{w.toFixed(2)}, {h.toFixed(2)}, {d.toFixed(2)}]</div>
-              <div>Final render: [{pos.map(n => n.toFixed(2)).join(', ')}]</div>
-            </div>
-          )}
-        </div>
+        )}
       </Html>
+      )}
 
       {/* Facing Direction Visualizer Arrow */}
       {viewSettings?.showObjectDirections && (
@@ -543,6 +795,24 @@ function AutoFitController({ stats, fitTrigger }) {
   return null;
 }
 
+function DemoCameraController({ isHardcodedDemo, cameraStart }) {
+  const { camera, controls } = useThree();
+  useEffect(() => {
+    if (!isHardcodedDemo || !cameraStart) return;
+    const pos = cameraStart.position || [0, 1.6, 5.7];
+    const target = cameraStart.target || [0, 1.1, -1.2];
+    const fov = cameraStart.fov || 58;
+    camera.position.set(pos[0], pos[1], pos[2]);
+    camera.fov = fov;
+    camera.updateProjectionMatrix();
+    if (controls) {
+      controls.target.set(target[0], target[1], target[2]);
+      controls.update();
+    }
+  }, [isHardcodedDemo, cameraStart, camera, controls]);
+  return null;
+}
+
 // ─── Keyboard global handler ───────────────────────────────────────────────
 
 function KeyboardHandler({ selectedId, onDelete, onTransformMode }) {
@@ -598,11 +868,212 @@ export default function Scene({
   roomAnalysis,
   scaleFactor,
   distancePickerObjects,
+  isHardcodedDemo,
+  demoSceneData,
 }) {
+  useEffect(() => {
+    console.log("Scene mounted", pointCloudUrl);
+  }, [pointCloudUrl]);
+
   const [pcStats, setPcStats] = useState(null);
   const [sceneTransform, setSceneTransform] = useState({ position: [0, 0, 0], scale: [1, 1, 1] });
+  const shadowTexture = useMemo(() => createRadialShadowTexture(), []);
+
+  const roomBounds = useMemo(() => {
+    if (isHardcodedDemo && demoSceneData?.room?.dimensions) {
+      const w = demoSceneData.room.dimensions.width || 6.4;
+      const d = demoSceneData.room.dimensions.length || 7.2;
+      return [-w / 2 * scaleFactor, w / 2 * scaleFactor, -d / 2 * scaleFactor, d / 2 * scaleFactor];
+    }
+    // Determine visual room bounds synced with ProxyRoom and Backend clamping (Requirement 7)
+    let minX = -2.5, maxX = 2.5, minZ = -2.5, maxZ = 2.5;
+    if (pcStats && pcStats.min && pcStats.max && pcStats.size) {
+      const centerX = (pcStats.min.x + pcStats.max.x) / 2;
+      const centerZ = (-pcStats.min.z - pcStats.max.z) / 2; // ThreeJS Z is negative of PLY Z
+      
+      const rawWidth = (pcStats.size.x || 5.0) * 1.15;
+      const rawDepth = (pcStats.size.z || 5.0) * 1.15;
+      
+      const clampedW = Math.max(2.5, Math.min(8.0, rawWidth));
+      const clampedD = Math.max(2.5, Math.min(10.0, rawDepth));
+      
+      minX = centerX - clampedW / 2;
+      maxX = centerX + clampedW / 2;
+      minZ = centerZ - clampedD / 2;
+      maxZ = centerZ + clampedD / 2;
+    }
+    return [minX * scaleFactor, maxX * scaleFactor, minZ * scaleFactor, maxZ * scaleFactor];
+  }, [pcStats, scaleFactor, isHardcodedDemo, demoSceneData]);
 
   const alignedObjects = useMemo(() => {
+    const FLOOR_Y = isHardcodedDemo ? 0 : (viewSettings.floorHeight || -2);
+    const FLOOR_Y_SCALED = FLOOR_Y * scaleFactor;
+    
+    const roomHeight = isHardcodedDemo 
+      ? (demoSceneData?.room?.dimensions?.height || 3.05) 
+      : (pcStats?.size?.y || 3.0);
+    const roomHeight_scaled = roomHeight * scaleFactor;
+
+    const [minX, maxX, minZ, maxZ] = roomBounds;
+
+    if (isHardcodedDemo) {
+      const roomW = demoSceneData?.room?.dimensions?.width || 6.8;
+      const roomD = demoSceneData?.room?.dimensions?.length || 6.2;
+      const roomH = demoSceneData?.room?.dimensions?.height || 3.0;
+
+      const leftWallX = -roomW / 2;
+      const rightWallX = roomW / 2;
+      const frontWallZ = -roomD / 2;
+      const backWallZ = roomD / 2;
+
+      // Helper to find against relations recursively
+      const getAgainstRelation = (objId) => {
+        if (!demoSceneData?.relations) return null;
+        const direct = demoSceneData.relations.find(r => r.source === objId && r.relation === 'against');
+        if (direct) return direct;
+        const parentRel = demoSceneData.relations.find(r => r.source === objId && ['on_top_of', 'above', 'behind', 'inside'].includes(r.relation));
+        if (parentRel) {
+          return getAgainstRelation(parentRel.target);
+        }
+        return null;
+      };
+
+      return objects.map(obj => {
+        const [w, h, d] = obj.size || obj.box_3d?.size || [1, 1, 1];
+        const raw_pos = obj.position || [0, 0, 0];
+        const rotY = obj.rotation_y !== undefined ? obj.rotation_y : 0;
+
+        // Snapping system
+        let snapX = raw_pos[0];
+        let snapZ = raw_pos[2];
+
+        const againstRel = getAgainstRelation(obj.id);
+        if (againstRel) {
+          const targetId = againstRel.target.toLowerCase();
+          if (targetId.includes('left')) {
+            snapX = leftWallX + d / 2;
+          } else if (targetId.includes('right')) {
+            snapX = rightWallX - d / 2;
+          } else if (targetId.includes('front')) {
+            snapZ = frontWallZ + d / 2;
+          } else if (targetId.includes('back')) {
+            snapZ = backWallZ - d / 2;
+          }
+        }
+
+        // Perspective/rotation-aware dimensions for clamping
+        const isRotated90 = Math.abs(Math.abs(rotY) - 1.5708) < 0.1;
+        const w_world = isRotated90 ? d : w;
+        const d_world = isRotated90 ? w : d;
+
+        const scaledX = snapX * scaleFactor;
+        const scaledZ = snapZ * scaleFactor;
+
+        // 1. Clamping bounds to prevent clipping (X and Z)
+        const clampedX = Math.max(minX + (w_world * scaleFactor) / 2, Math.min(maxX - (w_world * scaleFactor) / 2, scaledX));
+        const clampedZ = Math.max(minZ + (d_world * scaleFactor) / 2, Math.min(maxZ - (d_world * scaleFactor) / 2, scaledZ));
+        
+        const scaledW = w * scaleFactor;
+        const scaledH = h * scaleFactor;
+        const scaledD = d * scaleFactor;
+
+        // 2. Snapping Y position:
+        let finalPosY = FLOOR_Y_SCALED + scaledH / 2;
+        let finalBaseY = FLOOR_Y_SCALED;
+
+        const cat = (obj.category || obj.placement_category || 'floor').toLowerCase();
+        const labelLower = (obj.label || '').toLowerCase();
+        
+        const isSuspendedOrSurface = ['upper', 'countertop', 'backsplash', 'stove', 'cooktop', 'sink', 'faucet', 'window', 'oven'].some(c => cat.includes(c) || labelLower.includes(c));
+        const isFurniture = ['bed', 'sofa', 'chair', 'table', 'wardrobe', 'console', 'cabinet', 'bookshelf', 'rug', 'nightstand', 'stool', 'seating', 'appliance', 'bench'].some(c => cat.includes(c) || labelLower.includes(c)) && !isSuspendedOrSurface;
+
+        if (isFurniture) {
+          if (cat.includes('rug') || labelLower.includes('rug')) {
+            finalPosY = FLOOR_Y_SCALED + (0.01 * scaleFactor) + scaledH / 2;
+            finalBaseY = FLOOR_Y_SCALED + (0.01 * scaleFactor);
+          } else {
+            finalPosY = FLOOR_Y_SCALED + scaledH / 2;
+            finalBaseY = FLOOR_Y_SCALED;
+          }
+        } else if (labelLower.includes('lamp') && !cat.includes('ceiling') && !labelLower.includes('chandelier') && !labelLower.includes('pendant')) {
+          // Find if there's a bedside table or other nightstand directly underneath
+          const tableBelow = objects.find(other => {
+            if (other.id === obj.id) return false;
+            const otherCat = (other.category || other.placement_category || '').toLowerCase();
+            const otherLabel = (other.label || '').toLowerCase();
+            const isTable = otherLabel.includes('table') || otherLabel.includes('nightstand') || otherCat.includes('table') || otherCat.includes('nightstand') || otherLabel.includes('drawer');
+            if (!isTable) return false;
+            const otherX = other.position ? other.position[0] : 0;
+            const otherZ = other.position ? other.position[2] : 0;
+            const objX = raw_pos[0];
+            const objZ = raw_pos[2];
+            const distSq = (otherX - objX) ** 2 + (otherZ - objZ) ** 2;
+            return distSq < 0.25; // within 0.5m
+          });
+          if (tableBelow) {
+            const tableHeight = tableBelow.size ? tableBelow.size[1] : 0.64;
+            const tableTopY = FLOOR_Y_SCALED + tableHeight * scaleFactor;
+            finalPosY = tableTopY + scaledH / 2;
+            finalBaseY = tableTopY;
+          } else {
+            const tempY = raw_pos[1];
+            finalPosY = FLOOR_Y_SCALED + tempY * scaleFactor;
+            finalBaseY = finalPosY - scaledH / 2;
+          }
+        } else if (cat.includes('wall') || cat.includes('mirror') || cat.includes('painting') || cat.includes('window') || cat.includes('curtain') || labelLower.includes('mirror') || labelLower.includes('painting') || labelLower.includes('window') || labelLower.includes('curtain') || labelLower.includes('tv') || labelLower.includes('screen')) {
+          // Wall objects
+          if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('art')) {
+            finalPosY = FLOOR_Y_SCALED + roomHeight_scaled * 0.65;
+          } else if (labelLower.includes('tv') || labelLower.includes('screen')) {
+            finalPosY = FLOOR_Y_SCALED + 1.4 * scaleFactor;
+          } else if (labelLower.includes('mirror')) {
+            finalPosY = FLOOR_Y_SCALED + 1.5 * scaleFactor;
+          } else {
+            // Curtains, window glass, shelf, light strips
+            const tempY = raw_pos[1];
+            finalPosY = FLOOR_Y_SCALED + tempY * scaleFactor;
+          }
+          finalBaseY = finalPosY - scaledH / 2;
+        } else if (cat.includes('ceiling') || labelLower.includes('chandelier') || labelLower.includes('pendant')) {
+          // Ceiling objects
+          if (labelLower.includes('pendant')) {
+            finalPosY = FLOOR_Y_SCALED + roomHeight_scaled - 0.25 * scaleFactor;
+          } else {
+            // Chandeliers / ceiling track
+            finalPosY = FLOOR_Y_SCALED + roomHeight_scaled - 0.3 * scaleFactor;
+          }
+          finalBaseY = finalPosY - scaledH / 2;
+        } else {
+          // Pillows, blankets, decors: keep relative Y offset from support
+          const base_y_json = obj.base_position ? obj.base_position[1] : (raw_pos[1] - h / 2);
+          finalPosY = FLOOR_Y_SCALED + raw_pos[1] * scaleFactor;
+          finalBaseY = FLOOR_Y_SCALED + base_y_json * scaleFactor;
+        }
+
+        // 3. Validation & Auto-correct
+        const bottom = finalPosY - scaledH / 2;
+        if (bottom < FLOOR_Y_SCALED) {
+          finalPosY += (FLOOR_Y_SCALED - bottom);
+          finalBaseY = finalPosY - scaledH / 2;
+        }
+
+        const basePos = [clampedX, finalBaseY, clampedZ];
+        const centerPos = [clampedX, finalPosY, clampedZ];
+        
+        return {
+          ...obj,
+          isDemo: true,
+          placement_category: cat,
+          box_3d: {
+            center: centerPos,
+            base_position: basePos,
+            size: [scaledW, scaledH, scaledD],
+            rotationY: rotY,
+          }
+        };
+      });
+    }
+
     return objects.map(obj => {
       // 1. Convert coordinates (flip Y and Z due to point cloud rotation)
       const [rawX, rawY, rawZ] = obj.box_3d?.center || [0, 0, 0];
@@ -632,16 +1103,6 @@ export default function Scene({
         const normX = imgX / maxX2d;
         const normZ = imgY / maxY2d;
 
-        let minX = -5, maxX = 5, minZ = -5, maxZ = 5;
-        if (pcStats.min && pcStats.max) {
-          minX = pcStats.min.x;
-          maxX = pcStats.max.x;
-          const z1 = -pcStats.min.z;
-          const z2 = -pcStats.max.z;
-          minZ = Math.min(z1, z2);
-          maxZ = Math.max(z1, z2);
-        }
-
         const roomWidth = maxX - minX;
         const roomDepth = maxZ - minZ;
 
@@ -649,19 +1110,14 @@ export default function Scene({
         z_scene = minZ + normZ * roomDepth;
       }
 
-      // Clamp to room bounds
-      let minX = -5, maxX = 5, minZ = -5, maxZ = 5;
-      if (pcStats && pcStats.min && pcStats.max) {
-        minX = pcStats.min.x;
-        maxX = pcStats.max.x;
-        const z1 = -pcStats.min.z;
-        const z2 = -pcStats.max.z;
-        minZ = Math.min(z1, z2);
-        maxZ = Math.max(z1, z2);
-      }
+      // Clamp to room bounds using pre-calculated bounds
       const margin = 0.2;
-      const clampedX = Math.max(minX + margin, Math.min(maxX - margin, x_scene));
-      const clampedZ = Math.max(minZ + margin, Math.min(maxZ - margin, z_scene));
+      const clampedX = Math.max(minX + (w * scaleFactor) / 2, Math.min(maxX - (w * scaleFactor) / 2, x_scene * scaleFactor));
+      const clampedZ = Math.max(minZ + (d * scaleFactor) / 2, Math.min(maxZ - (d * scaleFactor) / 2, z_scene * scaleFactor));
+
+      const scaledW = w * scaleFactor;
+      const scaledH = h * scaleFactor;
+      const scaledD = d * scaleFactor;
 
       // Snapping classification based on label
       const labelLower = obj.label?.toLowerCase() || '';
@@ -670,28 +1126,85 @@ export default function Scene({
 
       let finalX = clampedX;
       let finalZ = clampedZ;
-      const floorY = viewSettings.floorHeight || -2;
-      let finalY = floorY + h / 2; // Default for floor items
       let rotationY = obj.rotation_y !== undefined ? obj.rotation_y : 0;
 
       if (obj.base_position) {
-        finalX = obj.base_position[0];
+        finalX = obj.base_position[0] * scaleFactor;
         // Flip Z because ThreeJS Z is -Python Z
-        finalZ = -obj.base_position[2];
+        finalZ = -obj.base_position[2] * scaleFactor;
       }
 
-      // Height logic based on placement category
-      const category = obj.placement_category || (isWallObject ? 'wall' : 'floor');
+      // Snapping Y position:
+      let finalPosY = FLOOR_Y_SCALED + scaledH / 2;
+      let finalBaseY = FLOOR_Y_SCALED;
 
-      if (category === 'ceiling') {
-        const ceilingY = pcStats && pcStats.max ? -pcStats.min.y : floorY + 2.7;
-        finalY = ceilingY - h / 2;
-      } else if (category === 'wall') {
-        const tempY = obj.position_world ? -obj.position_world[1] : y_scene;
-        finalY = Math.max(floorY + 1.2, Math.min(floorY + 1.8, tempY));
+      const category = obj.placement_category || (isWallObject ? 'wall' : 'floor');
+      const cat = category.toLowerCase();
+      
+      const isSuspendedOrSurface = ['upper', 'countertop', 'backsplash', 'stove', 'cooktop', 'sink', 'faucet', 'window', 'oven'].some(c => cat.includes(c) || labelLower.includes(c));
+      const isFurniture = ['bed', 'sofa', 'chair', 'table', 'wardrobe', 'console', 'cabinet', 'bookshelf', 'rug', 'nightstand', 'stool', 'seating', 'appliance', 'bench'].some(c => cat.includes(c) || labelLower.includes(c)) && !isSuspendedOrSurface;
+
+      if (isFurniture) {
+        if (cat.includes('rug') || labelLower.includes('rug')) {
+          finalPosY = FLOOR_Y_SCALED + (0.01 * scaleFactor) + scaledH / 2;
+          finalBaseY = FLOOR_Y_SCALED + (0.01 * scaleFactor);
+        } else {
+          finalPosY = FLOOR_Y_SCALED + scaledH / 2;
+          finalBaseY = FLOOR_Y_SCALED;
+        }
+      } else if (labelLower.includes('lamp') && !cat.includes('ceiling') && !labelLower.includes('chandelier') && !labelLower.includes('pendant')) {
+        // Find if there's a bedside table or other nightstand directly underneath (in raw coordinate space)
+        const tableBelow = objects.find(other => {
+          if (other.id === obj.id) return false;
+          const otherCat = (other.category || other.placement_category || '').toLowerCase();
+          const otherLabel = (other.label || '').toLowerCase();
+          const isTable = otherLabel.includes('table') || otherLabel.includes('nightstand') || otherCat.includes('table') || otherCat.includes('nightstand') || otherLabel.includes('drawer');
+          if (!isTable) return false;
+          const otherX = other.box_3d?.center ? other.box_3d.center[0] : 0;
+          const otherZ = other.box_3d?.center ? other.box_3d.center[2] : 0;
+          const objX = rawX;
+          const objZ = rawZ;
+          const distSq = (otherX - objX) ** 2 + (otherZ - objZ) ** 2;
+          return distSq < 0.25; // within 0.5m in raw coordinates
+        });
+        if (tableBelow) {
+          const tableHeight = tableBelow.box_3d?.size ? tableBelow.box_3d.size[1] : 0.64;
+          const tableTopY = FLOOR_Y_SCALED + tableHeight * scaleFactor;
+          finalPosY = tableTopY + scaledH / 2;
+          finalBaseY = tableTopY;
+        } else {
+          const tempY = obj.position_world ? -obj.position_world[1] : y_scene;
+          finalPosY = FLOOR_Y_SCALED + tempY * scaleFactor;
+          finalBaseY = finalPosY - scaledH / 2;
+        }
+      } else if (cat.includes('wall') || cat.includes('mirror') || cat.includes('painting') || cat.includes('window') || cat.includes('curtain') || labelLower.includes('mirror') || labelLower.includes('painting') || labelLower.includes('window') || labelLower.includes('curtain') || labelLower.includes('tv') || labelLower.includes('screen')) {
+        // Wall objects
+        if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('art')) {
+          finalPosY = FLOOR_Y_SCALED + roomHeight_scaled * 0.65;
+        } else if (labelLower.includes('tv') || labelLower.includes('screen')) {
+          finalPosY = FLOOR_Y_SCALED + 1.4 * scaleFactor;
+        } else if (labelLower.includes('mirror')) {
+          finalPosY = FLOOR_Y_SCALED + 1.5 * scaleFactor;
+        } else {
+          // Curtains, window glass, shelf, light strips
+          const tempY = obj.position_world ? -obj.position_world[1] : y_scene;
+          finalPosY = Math.max(FLOOR_Y_SCALED + 1.2 * scaleFactor, Math.min(FLOOR_Y_SCALED + 1.8 * scaleFactor, tempY * scaleFactor));
+        }
+        finalBaseY = finalPosY - scaledH / 2;
+      } else if (cat.includes('ceiling') || labelLower.includes('chandelier') || labelLower.includes('pendant')) {
+        // Ceiling objects
+        if (labelLower.includes('pendant')) {
+          finalPosY = FLOOR_Y_SCALED + roomHeight_scaled - 0.25 * scaleFactor;
+        } else {
+          // Chandeliers / ceiling track
+          finalPosY = FLOOR_Y_SCALED + roomHeight_scaled - 0.3 * scaleFactor;
+        }
+        finalBaseY = finalPosY - scaledH / 2;
       } else {
-        // Floor object: Force exactly onto floor plane and apply vertical sanity clamp of 1.2m
-        finalY = Math.min(floorY + h / 2, floorY + 1.2);
+        // Pillows, blankets, decors: keep relative Y offset from support
+        const tempY = obj.position_world ? -obj.position_world[1] : y_scene;
+        finalPosY = FLOOR_Y_SCALED + tempY * scaleFactor;
+        finalBaseY = finalPosY - scaledH / 2;
       }
 
       if (!obj.base_position && isWallMountedOrStandingAgainstWall && !obj.rotation_y) {
@@ -702,37 +1215,46 @@ export default function Scene({
         const minDist = Math.min(distToLeft, distToRight, distToBack, distToFront);
 
         if (minDist === distToLeft) {
-          finalX = minX + w / 2;
+          finalX = minX + scaledW / 2;
           rotationY = Math.PI / 2;
         } else if (minDist === distToRight) {
-          finalX = maxX - w / 2;
+          finalX = maxX - scaledW / 2;
           rotationY = -Math.PI / 2;
         } else if (minDist === distToBack) {
-          finalZ = minZ + d / 2;
+          finalZ = minZ + scaledD / 2;
           rotationY = 0;
         } else {
-          finalZ = maxZ - d / 2;
+          finalZ = maxZ - scaledD / 2;
           rotationY = Math.PI;
         }
       }
 
-      const finalPos = [finalX, finalY - h / 2, finalZ];
+      // Validation & Auto-correct
+      let validatedPosY = finalPosY;
+      let validatedBaseY = finalBaseY;
+      const bottom = validatedPosY - scaledH / 2;
+      if (bottom < FLOOR_Y_SCALED) {
+        validatedPosY += (FLOOR_Y_SCALED - bottom);
+        validatedBaseY = validatedPosY - scaledH / 2;
+      }
+
+      const rotationY_c = obj.rotation_y !== undefined ? -obj.rotation_y : 0;
 
       return {
         ...obj,
         placement_category: category,
         raw_center: [rawX, rawY, rawZ],
-        converted_center: [x_scene, y_scene, z_scene],
+        converted_center: [x_scene * scaleFactor, y_scene * scaleFactor, z_scene * scaleFactor],
         box_3d: {
           ...obj.box_3d,
-          center: [finalX, finalY, finalZ],
-          base_position: finalPos,
-          size: [w, h, d],
-          rotationY: rotationY,
+          center: [finalX, validatedPosY, finalZ],
+          base_position: [finalX, validatedBaseY, finalZ],
+          size: [scaledW, scaledH, scaledD],
+          rotationY: rotationY_c,
         }
       };
     });
-  }, [objects, pcStats, viewSettings.floorHeight]);
+  }, [objects, pcStats, viewSettings.floorHeight, scaleFactor, roomBounds, isHardcodedDemo, demoSceneData]);
 
   const handlePointCloudLoad = useCallback((stats) => {
     setPcStats(stats);
@@ -757,13 +1279,35 @@ export default function Scene({
     <Canvas camera={{ position: [0, 3, 9], fov: 58 }} gl={{ antialias: true, alpha: false }} shadows>
       <KeyboardHandler selectedId={selectedId} onDelete={onDeleteSelected} onTransformMode={onTransformModeChange} />
       <AutoFitController stats={pcStats} fitTrigger={fitTrigger} />
+      <DemoCameraController isHardcodedDemo={isHardcodedDemo} cameraStart={demoSceneData?.camera_start} />
       <CameraSetup />
       <color attach="background" args={['#080b12']} />
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[8, 12, 6]} intensity={1.2} castShadow shadow-mapSize={[2048, 2048]} />
-      <directionalLight position={[-6, 8, -4]} intensity={0.4} />
+      <ambientLight
+        intensity={isHardcodedDemo ? (demoSceneData?.lighting?.ambient?.intensity || 0.55) : 0.5}
+        color={isHardcodedDemo ? (demoSceneData?.lighting?.ambient?.color || "#fff4e6") : undefined}
+      />
+      <directionalLight position={[8, 12, 6]} intensity={isHardcodedDemo ? 0.6 : 1.2} castShadow shadow-mapSize={[2048, 2048]} />
+      <directionalLight position={[-6, 8, -4]} intensity={isHardcodedDemo ? 0.2 : 0.4} />
 
       <group position={sceneTransform.position} scale={sceneTransform.scale}>
+        {isHardcodedDemo && demoSceneData?.lighting?.fixtures && demoSceneData.lighting.fixtures.map((fixture) => {
+          let pos = fixture.position;
+          if (!pos && demoSceneData.objects) {
+            const obj = demoSceneData.objects.find(o => o.id === fixture.id);
+            if (obj) pos = obj.position;
+          }
+          if (!pos) return null;
+          return (
+            <pointLight
+              key={fixture.id}
+              position={pos}
+              intensity={fixture.intensity || 1.0}
+              color={fixture.color || "#ffffff"}
+              distance={8}
+              decay={2}
+            />
+          );
+        })}
         <Suspense fallback={null}>
           <ErrorBoundary>
             <PointCloud
@@ -782,16 +1326,18 @@ export default function Scene({
           viewMode={viewSettings.viewMode}
           wallOpacity={viewSettings.wallOpacity}
           floorHeight={viewSettings.floorHeight}
-          roomScale={viewSettings.roomScale}
+          roomScale={scaleFactor}
           showGrid={viewSettings.showGrid}
           showWalls={viewSettings.showWalls}
           showCeiling={viewSettings.showCeiling}
           placementMode={placementMode}
           onSceneClick={handleSceneClickInternal}
           pcBounds={pcStats}
+          isHardcodedDemo={isHardcodedDemo}
+          roomData={demoSceneData?.room}
         />
 
-        {showWalkablePanel && (
+        {showWalkablePanel && isSceneVisible && (
           <WalkableOverlay
             settings={viewSettings}
             objects={alignedObjects}
@@ -800,35 +1346,57 @@ export default function Scene({
           />
         )}
 
-        <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={alignedObjects} placedItems={placedItems} />
-        <MeasurementOverlay 
-          objects={alignedObjects} 
-          placedItems={placedItems} 
-          settings={viewSettings} 
-          visible={showMeasurements} 
-          roomAnalysis={roomAnalysis}
-          pcStats={pcStats}
-          scaleFactor={scaleFactor}
-          distancePickerObjects={distancePickerObjects}
-        />
+        {isSceneVisible && (
+          <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={alignedObjects} placedItems={placedItems} />
+        )}
+        
+        {isSceneVisible && (
+          <MeasurementOverlay 
+            objects={alignedObjects} 
+            placedItems={placedItems} 
+            settings={viewSettings} 
+            visible={showMeasurements} 
+            roomAnalysis={roomAnalysis}
+            pcStats={pcStats}
+            scaleFactor={scaleFactor}
+            distancePickerObjects={distancePickerObjects}
+          />
+        )}
 
-        {showAssistantPanel && (
+        {showAssistantPanel && isSceneVisible && (
           <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={alignedObjects} placedItems={placedItems} />
         )}
 
-        {showGraphPanel && (
-          <GraphOverlay objects={alignedObjects} placedItems={placedItems} settings={viewSettings} hoverSource={activeGraphSource} hoverTarget={activeGraphTarget} />
+        {showGraphPanel && isSceneVisible && (
+          <GraphOverlay
+            objects={alignedObjects}
+            placedItems={placedItems}
+            settings={viewSettings}
+            hoverSource={activeGraphSource}
+            hoverTarget={activeGraphTarget}
+            isHardcodedDemo={isHardcodedDemo}
+            relations={demoSceneData?.relations}
+            demoSceneData={demoSceneData}
+          />
         )}
 
-        {showCVPanel && (
+        {showCVPanel && isSceneVisible && (
           <CVOverlay settings={viewSettings} pipelineStage={cvStage} currentFrame={cvFrame} />
         )}
 
-        {alignedObjects.map(obj => (
-          <DetectedBoundingBox key={obj.id} object={obj} selected={selectedId === obj.id} onClick={onSelect} viewSettings={viewSettings} />
+        {isSceneVisible && alignedObjects.map(obj => (
+          <DetectedBoundingBox
+            key={obj.id}
+            object={obj}
+            selected={selectedId === obj.id}
+            onClick={onSelect}
+            viewSettings={viewSettings}
+            shadowTexture={shadowTexture}
+            roomBounds={roomBounds}
+          />
         ))}
 
-        {placedItems.map(item => (
+        {isSceneVisible && placedItems.map(item => (
           <PlacedFurniture
             key={item.id}
             item={item}
@@ -843,8 +1411,26 @@ export default function Scene({
           <gridHelper args={[15, 15, '#06b6d4', '#475569']} position={[0, viewSettings.floorHeight + 0.02, 0]} />
         )}
 
-        <ContactShadows opacity={0.4} scale={12} blur={2.5} far={5} position={[0, viewSettings.floorHeight + 0.01, 0]} />
-        <Environment preset="apartment" />
+        {viewSettings?.showObjectDebug && (
+          <group>
+            {/* Green floor line / grid at FLOOR_Y */}
+            <gridHelper 
+              args={[30, 30, '#22c55e', '#22c55e']} 
+              position={[0, isHardcodedDemo ? 0.005 : (viewSettings.floorHeight + 0.005), 0]} 
+            />
+            <gridHelper
+              args={[30, 2, '#16a34a', '#16a34a']}
+              position={[0, isHardcodedDemo ? 0.006 : (viewSettings.floorHeight + 0.006), 0]}
+            />
+          </group>
+        )}
+
+        {isSceneVisible && (
+          <ContactShadows opacity={0.4} scale={12} blur={2.5} far={5} position={[0, viewSettings.floorHeight + 0.01, 0]} />
+        )}
+        {isSceneVisible && (
+          <Environment preset="apartment" />
+        )}
 
         {cameraMode === 'walk' ? (
           <WalkControls />

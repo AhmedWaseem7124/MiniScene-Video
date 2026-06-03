@@ -70,6 +70,7 @@ export default function ViewSettings({
           <ToggleControl label="Show Grid" checked={settings.showGrid} onChange={(v) => handleChange('showGrid', v)} />
           <ToggleControl label="Show Walls" checked={settings.showWalls} onChange={(v) => handleChange('showWalls', v)} />
           <ToggleControl label="Show Ceiling" checked={settings.showCeiling} onChange={(v) => handleChange('showCeiling', v)} />
+          <ToggleControl label="Show Labels" checked={settings.showLabels} onChange={(v) => handleChange('showLabels', v)} />
         </div>
 
         {/* Visual Debug */}

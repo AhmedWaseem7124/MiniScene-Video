@@ -12,15 +12,10 @@ export default function ProxyRoom({
   placementMode,
   onSceneClick,
   pcBounds,        // { size: THREE.Vector3, center: THREE.Vector3 } from point cloud load
+  isHardcodedDemo,
+  roomData,
 }) {
   const isPointsMode = viewMode === 'points' || viewMode === 'semantic';
-
-  // Derive room dimensions from real point-cloud bounds when available
-  const scaleFactor = roomScale || 1;
-  const width  = pcBounds ? Math.max(4, pcBounds.size.x * 1.15) * scaleFactor : 10 * scaleFactor;
-  const depth  = pcBounds ? Math.max(4, pcBounds.size.z * 1.15) * scaleFactor : 10 * scaleFactor;
-  // Height: use actual Y extent capped between 2.5 and 5 for reasonable wall height
-  const height = pcBounds ? Math.min(5, Math.max(2.5, pcBounds.size.y * 0.8)) * scaleFactor : 4 * scaleFactor;
 
   const handlePointerDown = (e) => {
     if (placementMode) {
@@ -28,6 +23,79 @@ export default function ProxyRoom({
       onSceneClick(e.point);
     }
   };
+
+  if (isHardcodedDemo && roomData) {
+    const floorSize = roomData.floor?.size || [6.4, 0.04, 7.2];
+    const floorPos = roomData.floor?.position || [0, 0, 0];
+    const floorColor = roomData.floor?.color || "#e8e3dc";
+
+    return (
+      <group>
+        {/* Floor */}
+        <mesh
+          position={floorPos}
+          receiveShadow={!isPointsMode}
+          onPointerDown={handlePointerDown}
+          visible={!isPointsMode || placementMode}
+        >
+          <boxGeometry args={floorSize} />
+          <meshStandardMaterial
+            color={floorColor}
+            roughness={0.7}
+            metalness={0.1}
+            transparent
+            opacity={isPointsMode ? 0 : viewMode === 'hybrid' ? 0.92 : 1}
+          />
+        </mesh>
+
+        {/* Walls */}
+        {showWalls && !isPointsMode && roomData.walls && roomData.walls.map((wall) => (
+          <mesh key={wall.id} position={wall.position} receiveShadow>
+            <boxGeometry args={wall.size} />
+            <meshStandardMaterial
+              color={wall.color || "#d8d3ca"}
+              roughness={0.9}
+              transparent
+              opacity={wallOpacity}
+            />
+          </mesh>
+        ))}
+
+        {/* Ceiling */}
+        {showCeiling && !isPointsMode && roomData.ceiling && (
+          <mesh position={roomData.ceiling.position} receiveShadow>
+            <boxGeometry args={roomData.ceiling.size} />
+            <meshStandardMaterial
+              color={roomData.ceiling.color || "#f2eee8"}
+              roughness={0.9}
+              transparent
+              opacity={wallOpacity * 0.7}
+            />
+          </mesh>
+        )}
+
+        {/* Grid helper on floor */}
+        {showGrid && !isPointsMode && (
+          <gridHelper
+            args={[Math.max(floorSize[0], floorSize[2]) * 1.5, 15, '#06b6d4', '#475569']}
+            position={[0, floorPos[1] + floorSize[1]/2 + 0.01, 0]}
+          />
+        )}
+      </group>
+    );
+  }
+
+  // Derive room dimensions from real point-cloud bounds when available
+  const scaleFactor = roomScale || 1;
+  
+  let rawWidth = pcBounds ? pcBounds.size.x * 1.15 : 5.0;
+  let rawDepth = pcBounds ? pcBounds.size.z * 1.15 : 5.0;
+  let rawHeight = pcBounds ? pcBounds.size.y * 0.8 : 2.7;
+  
+  // Clamp room dimensions: width: 2.5m - 8m, height: 2.2m - 3.5m, length/depth: 2.5m - 10m (Requirement 7)
+  const width = Math.max(2.5, Math.min(8.0, rawWidth)) * scaleFactor;
+  const depth = Math.max(2.5, Math.min(10.0, rawDepth)) * scaleFactor;
+  const height = Math.max(2.2, Math.min(3.5, rawHeight)) * scaleFactor;
 
   return (
     <group position={[0, floorHeight, 0]}>

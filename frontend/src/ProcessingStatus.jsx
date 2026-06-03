@@ -10,7 +10,7 @@ const STAGES = [
   { id: 'done',    icon: '✅', label: 'Scene ready!',              desc: 'Your 3D room is built' },
 ];
 
-export default function ProcessingStatus({ isProcessing, currentStage = 'recon', elapsedSeconds = 0, sessionId }) {
+export default function ProcessingStatus({ isProcessing, currentStage = 'recon', elapsedSeconds = 0, sessionId, onSkip }) {
   if (!isProcessing) return null;
 
   const activeIndex = Math.max(0, STAGES.findIndex(s => s.id === currentStage));
@@ -98,6 +98,38 @@ export default function ProcessingStatus({ isProcessing, currentStage = 'recon',
           );
         })}
       </div>
+
+      {currentStage === 'done' && onSkip && (
+        <button
+          onClick={onSkip}
+          style={{
+            marginTop: '10px',
+            background: 'rgba(99, 102, 241, 0.15)',
+            color: '#a78bfa',
+            border: '1px solid rgba(99, 102, 241, 0.3)',
+            padding: '10px 22px',
+            borderRadius: '12px',
+            fontSize: '0.9rem',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            fontFamily: "'Outfit', sans-serif",
+            transition: 'all 0.2s',
+            boxShadow: '0 4px 12px rgba(99,102,241,0.1)'
+          }}
+          onMouseEnter={e => {
+            e.target.style.background = 'rgba(99, 102, 241, 0.3)';
+            e.target.style.color = '#fff';
+            e.target.style.borderColor = 'rgba(99, 102, 241, 0.6)';
+          }}
+          onMouseLeave={e => {
+            e.target.style.background = 'rgba(99, 102, 241, 0.15)';
+            e.target.style.color = '#a78bfa';
+            e.target.style.borderColor = 'rgba(99, 102, 241, 0.3)';
+          }}
+        >
+          Show Scene Anyway (Skip Loading)
+        </button>
+      )}
 
       {/* CV identity badge */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>

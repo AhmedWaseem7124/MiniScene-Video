@@ -16,11 +16,11 @@ export default function MeasurementOverlay({
 
   // 1. Get raw room dimensions from point cloud or backend analysis
   const rawDimensions = useMemo(() => {
-    if (pcStats) {
+    if (pcStats && pcStats.size) {
       return {
-        width: pcStats.size.x,
-        length: pcStats.size.z,
-        height: pcStats.size.y,
+        width: pcStats.size.x || 5.0,
+        length: pcStats.size.z || 5.0,
+        height: pcStats.size.y || 3.0,
       };
     }
     if (roomAnalysis?.dimensions) {

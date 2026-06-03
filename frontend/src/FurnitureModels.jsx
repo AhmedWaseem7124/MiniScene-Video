@@ -207,28 +207,176 @@ export const PendantLight = () => (
   </group>
 );
 
+export const BedsideTable = () => (
+  <group>
+    {/* Body */}
+    <mesh position={[0, 0.55, 0]}><boxGeometry args={[1, 0.9, 1]} /><meshStandardMaterial color="#bda27e" roughness={0.6} /></mesh>
+    {/* Drawer front */}
+    <mesh position={[0, 0.55, 0.505]}><boxGeometry args={[0.9, 0.8, 0.01]} /><meshStandardMaterial color="#a78b66" roughness={0.5} /></mesh>
+    {/* Handle */}
+    <mesh position={[0, 0.55, 0.515]}><boxGeometry args={[0.2, 0.05, 0.02]} /><meshStandardMaterial color="#111111" metalness={0.8} /></mesh>
+    {/* Legs */}
+    {[[-0.45, -0.45], [-0.45, 0.45], [0.45, -0.45], [0.45, 0.45]].map(([x, z], i) => (
+      <mesh key={i} position={[x, 0.05, z]}><cylinderGeometry args={[0.04, 0.03, 0.1]} /><meshStandardMaterial color="#111111" metalness={0.5} /></mesh>
+    ))}
+  </group>
+);
+
+export const Wardrobe = () => (
+  <group>
+    {/* Main body */}
+    <mesh position={[0, 0.5, 0]}><boxGeometry args={[1.0, 1.0, 1.0]} /><meshStandardMaterial color="#d9d1c6" roughness={0.8} /></mesh>
+    {/* Separator */}
+    <mesh position={[0, 0.5, 0.505]}><boxGeometry args={[0.01, 0.98, 0.01]} /><meshStandardMaterial color="#1c1917" /></mesh>
+    {/* Handles */}
+    <mesh position={[-0.04, 0.5, 0.51]}><boxGeometry args={[0.02, 0.2, 0.02]} /><meshStandardMaterial color="#111111" metalness={0.7} /></mesh>
+    <mesh position={[0.04, 0.5, 0.51]}><boxGeometry args={[0.02, 0.2, 0.02]} /><meshStandardMaterial color="#111111" metalness={0.7} /></mesh>
+  </group>
+);
+
+export const Console = () => (
+  <group>
+    {/* Tabletop drawer body */}
+    <mesh position={[0, 0.85, 0]}><boxGeometry args={[1.0, 0.3, 1.0]} /><meshStandardMaterial color="#d4c5b3" roughness={0.7} /></mesh>
+    {/* Drawer fronts */}
+    <mesh position={[-0.23, 0.85, 0.505]}><boxGeometry args={[0.44, 0.24, 0.01]} /><meshStandardMaterial color="#bfb09e" roughness={0.6} /></mesh>
+    <mesh position={[0.23, 0.85, 0.505]}><boxGeometry args={[0.44, 0.24, 0.01]} /><meshStandardMaterial color="#bfb09e" roughness={0.6} /></mesh>
+    {/* Thin legs */}
+    {[[-0.45, -0.45], [-0.45, 0.45], [0.45, -0.45], [0.45, 0.45]].map(([x, z], i) => (
+      <mesh key={i} position={[x, 0.35, z]}><cylinderGeometry args={[0.03, 0.02, 0.7]} /><meshStandardMaterial color="#1c1917" metalness={0.5} /></mesh>
+    ))}
+  </group>
+);
+
+export const WallMirror = () => (
+  <group>
+    {/* Gold rim frame */}
+    <mesh position={[0, 0.5, 0]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[0.5, 0.5, 0.06, 32]} /><meshStandardMaterial color="#caa56f" metalness={0.8} roughness={0.2} /></mesh>
+    {/* Reflective glass */}
+    <mesh position={[0, 0.5, 0.035]} rotation={[Math.PI / 2, 0, 0]}><cylinderGeometry args={[0.46, 0.46, 0.01, 32]} /><meshStandardMaterial color="#bae6fd" metalness={0.95} roughness={0.01} transparent opacity={0.6} /></mesh>
+  </group>
+);
+
+export const Curtain = () => (
+  <group>
+    {/* Fabric flat box */}
+    <mesh position={[0, 0.5, 0]}><boxGeometry args={[1.0, 1.0, 0.4]} /><meshStandardMaterial color="#d7c6b5" roughness={0.95} /></mesh>
+    {/* Pleated folds */}
+    {[-0.4, -0.2, 0, 0.2, 0.4].map((x, i) => (
+      <mesh key={i} position={[x, 0.5, 0.15]}><cylinderGeometry args={[0.06, 0.06, 1.0, 8]} /><meshStandardMaterial color="#caa893" roughness={0.9} /></mesh>
+    ))}
+  </group>
+);
+
+export const KitchenCabinet = () => (
+  <group>
+    <mesh position={[0, 0.5, 0]}>
+      <boxGeometry args={[1, 1, 1]} />
+      <meshStandardMaterial color="#b9aa97" roughness={0.7} />
+    </mesh>
+    <mesh position={[0, 0.9, 0.01]}>
+      <boxGeometry args={[0.98, 0.16, 1.0]} />
+      <meshStandardMaterial color="#7a4e31" roughness={0.6} />
+    </mesh>
+  </group>
+);
+
+export const Refrigerator = () => (
+  <group>
+    <mesh position={[0, 0.5, 0]}>
+      <boxGeometry args={[1, 1, 1]} />
+      <meshStandardMaterial color="#777974" metalness={0.8} roughness={0.3} />
+    </mesh>
+    <mesh position={[0, 0.5, 0.505]}>
+      <boxGeometry args={[0.01, 0.96, 0.01]} />
+      <meshStandardMaterial color="#1a1a1a" />
+    </mesh>
+    <mesh position={[-0.04, 0.5, 0.52]}>
+      <boxGeometry args={[0.02, 0.4, 0.02]} />
+      <meshStandardMaterial color="#111111" metalness={0.9} />
+    </mesh>
+    <mesh position={[0.04, 0.5, 0.52]}>
+      <boxGeometry args={[0.02, 0.4, 0.02]} />
+      <meshStandardMaterial color="#111111" metalness={0.9} />
+    </mesh>
+  </group>
+);
+
+export const OvenStack = () => (
+  <group>
+    <mesh position={[0, 0.5, 0]}>
+      <boxGeometry args={[1, 1, 1]} />
+      <meshStandardMaterial color="#2d2c2a" roughness={0.8} />
+    </mesh>
+    <mesh position={[0, 0.72, 0.505]}>
+      <boxGeometry args={[0.88, 0.32, 0.01]} />
+      <meshStandardMaterial color="#1a1a1a" metalness={0.9} roughness={0.1} />
+    </mesh>
+    <mesh position={[0, 0.32, 0.505]}>
+      <boxGeometry args={[0.88, 0.32, 0.01]} />
+      <meshStandardMaterial color="#1a1a1a" metalness={0.9} roughness={0.1} />
+    </mesh>
+    <mesh position={[0, 0.82, 0.52]}>
+      <boxGeometry args={[0.6, 0.02, 0.03]} />
+      <meshStandardMaterial color="#cbd5e1" metalness={0.9} />
+    </mesh>
+    <mesh position={[0, 0.42, 0.52]}>
+      <boxGeometry args={[0.6, 0.02, 0.03]} />
+      <meshStandardMaterial color="#cbd5e1" metalness={0.9} />
+    </mesh>
+  </group>
+);
+
+export const DisplayCabinet = () => (
+  <group>
+    <mesh position={[0, 0.5, 0]}>
+      <boxGeometry args={[1, 1, 1]} />
+      <meshStandardMaterial color="#111111" roughness={0.7} metalness={0.4} />
+    </mesh>
+    <mesh position={[0, 0.5, 0.502]}>
+      <boxGeometry args={[0.96, 0.96, 0.01]} />
+      <meshStandardMaterial color="#60a5fa" metalness={0.9} roughness={0.01} transparent opacity={0.3} />
+    </mesh>
+    {[-0.2, 0.1, 0.4].map((y, i) => (
+      <mesh key={i} position={[0, y + 0.5, 0]}>
+        <boxGeometry args={[0.94, 0.02, 0.9]} />
+        <meshStandardMaterial color="#2d2c2a" transparent opacity={0.6} />
+      </mesh>
+    ))}
+  </group>
+);
+
 // ─── Model Renderer ────────────────────────────────────────────────────────
 
 export const renderModel = (type) => {
   switch (type) {
-    case 'Bed':          return <Bed />;
-    case 'KingBed':      return <KingBed />;
-    case 'Chair':        return <Chair />;
-    case 'Armchair':     return <Armchair />;
-    case 'Sofa':         return <Sofa />;
-    case 'Table':        return <Table />;
-    case 'Desk':         return <Desk />;
-    case 'SideTable':    return <SideTable />;
-    case 'Plant':        return <Plant />;
-    case 'Cupboard':     return <Cupboard />;
-    case 'Bookshelf':    return <Bookshelf />;
-    case 'TVStand':      return <TVStand />;
-    case 'Decoration':   return <Decoration />;
-    case 'Rug':          return <Rug />;
-    case 'Mirror':       return <Mirror />;
-    case 'Painting':     return <Painting />;
-    case 'Light':        return <Light />;
-    case 'PendantLight': return <PendantLight />;
+    case 'Bed':            return <Bed />;
+    case 'KingBed':        return <KingBed />;
+    case 'Chair':          return <Chair />;
+    case 'Armchair':       return <Armchair />;
+    case 'Sofa':           return <Sofa />;
+    case 'Table':          return <Table />;
+    case 'Desk':           return <Desk />;
+    case 'SideTable':      return <SideTable />;
+    case 'Plant':          return <Plant />;
+    case 'Cupboard':       return <Cupboard />;
+    case 'Bookshelf':      return <Bookshelf />;
+    case 'TVStand':        return <TVStand />;
+    case 'Decoration':     return <Decoration />;
+    case 'Rug':            return <Rug />;
+    case 'Mirror':         return <Mirror />;
+    case 'Painting':       return <Painting />;
+    case 'Light':          return <Light />;
+    case 'PendantLight':   return <PendantLight />;
+    case 'BedsideTable':   return <BedsideTable />;
+    case 'Wardrobe':       return <Wardrobe />;
+    case 'Console':        return <Console />;
+    case 'WallMirror':     return <WallMirror />;
+    case 'Curtain':        return <Curtain />;
+    case 'KitchenCabinet':  return <KitchenCabinet />;
+    case 'Refrigerator':   return <Refrigerator />;
+    case 'OvenStack':      return <OvenStack />;
+    case 'DisplayCabinet': return <DisplayCabinet />;
     default:
       return <mesh><boxGeometry args={[0.6, 0.6, 0.6]} /><meshStandardMaterial color="#6366f1" wireframe /></mesh>;
   }

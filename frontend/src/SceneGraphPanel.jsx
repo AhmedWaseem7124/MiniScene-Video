@@ -40,6 +40,9 @@ export default function SceneGraphPanel({ objects, placedItems, settings, onClos
     URL.revokeObjectURL(url);
   };
 
+  const edges = remoteData?.edges || remoteData?.relations || graphData.edges || [];
+  const nodes = remoteData?.nodes || remoteData?.objects || graphData.nodes || [];
+
   return (
     <motion.div 
       initial={{ x: -320 }}
@@ -69,7 +72,7 @@ export default function SceneGraphPanel({ objects, placedItems, settings, onClos
               <StatBox icon={<Target size={16} color="#ec4899" />} label="Central Obj" value={remoteData?.analytics?.centralObject || graphData.analytics.centralObject} />
               <StatBox icon={<Layers size={16} color="#3b82f6" />} label="Clusters" value={remoteData?.analytics?.clusterCount || graphData.analytics.clusterCount} />
               <StatBox icon={<BoxSelect size={16} color="#f59e0b" />} label="Isolated" value={remoteData?.analytics?.isolatedCount || graphData.analytics.isolatedCount} />
-              <StatBox icon={<Network size={16} color="#10b981" />} label="Total Edges" value={remoteData?.edges?.length || graphData.edges.length} />
+              <StatBox icon={<Network size={16} color="#10b981" />} label="Total Edges" value={edges.length} />
             </div>
 
             <button 
@@ -82,11 +85,10 @@ export default function SceneGraphPanel({ objects, placedItems, settings, onClos
 
             <h3 style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: '8px 0 0', textTransform: 'uppercase' }}>Relationships</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {(remoteData?.edges || graphData.edges).length === 0 ? (
+              {edges.length === 0 ? (
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>No spatial relationships detected.</p>
               ) : (
-                (remoteData?.edges || graphData.edges).map((edge, i) => {
-                  const nodes = remoteData?.nodes || graphData.nodes;
+                edges.map((edge, i) => {
                   const sourceNode = nodes.find(n => n.id === edge.source);
                   const targetNode = nodes.find(n => n.id === edge.target);
                   return (

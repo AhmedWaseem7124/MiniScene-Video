@@ -22,6 +22,97 @@ import ProcessingStatus from './ProcessingStatus';
 import LandingHero from './LandingHero';
 import SceneReadyBanner from './SceneReadyBanner';
 
+// ─── Canvas Error Boundary (Requirement 9) ──────────────────────────────────
+class CanvasErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error("Canvas Error Boundary caught an error:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100%',
+          width: '100%',
+          background: '#0d111a',
+          color: '#ef4444',
+          fontFamily: "'Outfit', sans-serif",
+          padding: '24px',
+          textAlign: 'center',
+          borderRadius: '12px',
+          boxShadow: 'inset 0 0 40px rgba(0,0,0,0.5)',
+          gridArea: 'viewport',
+        }}>
+          <div style={{ fontSize: '32px', marginBottom: '12px' }}>⚠️ 3D Viewport Crash</div>
+          <div style={{ color: '#94a3b8', maxWidth: '500px', fontSize: '14px', marginBottom: '20px' }}>
+            A rendering error occurred in the ThreeJS canvas. The rest of the interface remains active.
+          </div>
+          <pre style={{
+            background: 'rgba(239, 68, 68, 0.1)',
+            padding: '12px 18px',
+            borderRadius: '8px',
+            fontSize: '11px',
+            maxHeight: '150px',
+            overflowY: 'auto',
+            textAlign: 'left',
+            color: '#fca5a5',
+            border: '1px solid rgba(239, 68, 68, 0.2)',
+            width: '100%',
+            maxWidth: '500px',
+            fontFamily: 'monospace',
+          }}>
+            {this.state.error?.toString() || "Unknown rendering error"}
+          </pre>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            style={{
+              marginTop: '20px',
+              background: '#3b82f6',
+              color: 'white',
+              border: 'none',
+              padding: '8px 16px',
+              borderRadius: '6px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              boxShadow: '0 2px 8px rgba(59, 130, 246, 0.4)',
+            }}
+          >
+            Attempt Reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ─── Data Normalisation Helpers (Requirement 6 & 7) ─────────────────────────
+function normalizeSize(size) {
+  if (Array.isArray(size)) return size;
+  if (size && typeof size === "object") {
+    return [size.width || 0.8, size.height || 0.8, size.depth || 0.8];
+  }
+  return [0.8, 0.8, 0.8];
+}
+
+function normalizePosition(pos) {
+  if (Array.isArray(pos)) return pos;
+  if (pos && typeof pos === "object") {
+    return [pos.x || 0, pos.y || 0, pos.z || 0];
+  }
+  return [0, 0, 0];
+}
+
 const FURNITURE_EMOJIS = {
   Sofa: '🛋️', Bed: '🛏️', KingBed: '🛏️', Chair: '🪑', Armchair: '🪑',
   Table: '🪵', Desk: '🖥️', SideTable: '🪵', Plant: '🌿',
@@ -78,7 +169,7 @@ function App() {
   const [processState, setProcessState] = useState('IDLE');
 
   useEffect(() => {
-    console.log("App: processState changed to:", processState);
+    console.log("processState:", processState);
   }, [processState]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const isProcessing = ['UPLOADING', 'PROCESSING', 'LOADING_SCENE'].includes(processState);
@@ -92,6 +183,8 @@ function App() {
   const [analysisUrl, setAnalysisUrl] = useState(null);
   const [graphUrl, setGraphUrl] = useState(null);
   const [fitTrigger, setFitTrigger] = useState(0);
+  const [isHardcodedDemo, setIsHardcodedDemo] = useState(false);
+  const [demoSceneData, setDemoSceneData] = useState(null);
 
   const [viewSettings, setViewSettings] = useState({
     viewMode: 'hybrid',
@@ -108,6 +201,7 @@ function App() {
     showEditedPointCloud: false,
     showObjectDebug: false,
     showObjectDirections: false,
+    showLabels: false,
   });
 
   // Clear old cache on load
@@ -127,89 +221,37 @@ function App() {
         else if (data?.detections) items = data.detections;
         else if (data?.tracks) items = data.tracks;
 
+        if (data?.scene_id) {
+          setDemoSceneData(data);
+        } else {
+          setDemoSceneData(null);
+        }
+
         if (data?.metadata) {
           setObjectDetectionMetadata(data.metadata);
         } else {
           setObjectDetectionMetadata(null);
         }
 
-        // Normalise each detected object to a consistent shape
-        const normalised = items.map((obj, idx) => {
-          // Position: try multiple field names the backend may use
-          const pos =
-            obj.position_world ||
-            obj.box_3d?.center ||
-            obj.center ||
-            obj.position ||
-            obj.samples?.[0]?.position_world ||
-            [0, 0, 0];
+        // Normalise each detected object to a consistent shape defensively (Requirements 4, 6, 7)
+        const normalised = (items || [])
+          .filter(obj => obj !== null && typeof obj === 'object')
+          .map((obj, idx) => {
+            const rawPos = obj.position_world || obj.box_3d?.center || obj.center || obj.position || obj.samples?.[0]?.position_world;
+            const pos = normalizePosition(rawPos);
 
-          // Size: sensible defaults per label when unavailable
-          const labelKey = (obj.label || '').toLowerCase();
-          const DEFAULT_SIZES = {
-            chair: [0.6, 0.9, 0.6],
-            couch: [2.0, 0.9, 0.8],
-            sofa: [2.0, 0.9, 0.8],
-            'dining table': [1.2, 0.75, 0.8],
-            table: [1.2, 0.75, 0.8],
-            bed: [2.0, 0.6, 1.6],
-            person: [0.6, 1.7, 0.4],
-            tv: [1.2, 0.8, 0.1],
-            laptop: [0.4, 0.25, 0.3],
-            'potted plant': [0.5, 1.2, 0.5],
-            refrigerator: [0.8, 1.8, 0.8],
-            microwave: [0.5, 0.3, 0.4],
-            oven: [0.6, 0.85, 0.6],
-            sink: [0.6, 0.4, 0.5],
-            vase: [0.3, 0.5, 0.3],
-            book: [0.2, 0.05, 0.25],
-            clock: [0.3, 0.3, 0.1],
-            rug: [2.0, 0.03, 1.5],
-            carpet: [2.0, 0.03, 1.5],
-            painting: [1.2, 0.8, 0.05],
-            'wall art': [1.2, 0.8, 0.05],
-            mirror: [0.8, 1.2, 0.05],
-            plant: [0.5, 1.2, 0.5],
-            lamp: [0.4, 1.5, 0.4],
-            light: [0.4, 1.5, 0.4],
-            curtain: [1.5, 2.0, 0.05],
-            cupboard: [1.2, 2.0, 0.5],
-            wardrobe: [1.5, 2.2, 0.6],
-            cabinet: [1.0, 1.2, 0.4],
-            shelf: [1.2, 1.8, 0.3],
-            pillow: [0.5, 0.2, 0.35],
-            blanket: [1.5, 0.05, 1.2],
-            door: [0.9, 2.1, 0.05],
-            window: [1.2, 1.0, 0.05],
-            bench: [1.2, 0.45, 0.4],
-            keyboard: [0.45, 0.03, 0.15],
-            mouse: [0.1, 0.04, 0.06],
-            remote: [0.2, 0.03, 0.05],
-          };
-          let size = [0.8, 0.8, 0.8];
-          if (obj.size_m) {
-            if (Array.isArray(obj.size_m)) {
-              size = obj.size_m;
-            } else if (typeof obj.size_m === 'object') {
-              size = [obj.size_m.width || 0.8, obj.size_m.height || 0.8, obj.size_m.depth || 0.8];
-            }
-          } else if (obj.box_3d?.size) {
-            size = obj.box_3d.size;
-          } else if (obj.dimensions) {
-            size = obj.dimensions;
-          } else if (DEFAULT_SIZES[labelKey]) {
-            size = DEFAULT_SIZES[labelKey];
-          }
+            const rawSize = obj.size_m || obj.size || obj.box_3d?.size || obj.dimensions;
+            const size = normalizeSize(rawSize);
 
-          return {
-            ...obj,
-            id: obj.id || obj.object_id || `det_${idx}`,
-            label: obj.label || 'object',
-            confidence: obj.average_score ?? obj.representative_score ?? obj.confidence ?? 0,
-            position_world: pos,
-            box_3d: { center: pos, size },
-          };
-        });
+            return {
+              ...obj,
+              id: obj.id || obj.object_id || `det_${idx}`,
+              label: obj.label || 'object',
+              confidence: obj.average_score ?? obj.representative_score ?? obj.confidence ?? 0,
+              position_world: pos,
+              box_3d: { center: pos, size },
+            };
+          });
 
         setObjects(normalised);
       })
@@ -342,6 +384,7 @@ function App() {
   };
 
   const handlePointCloudLoad = useCallback((stats) => {
+    console.log("App received point cloud load", stats);
     setPcStats(stats);
     setProcessState('READY');
     setSceneLoaded(true);
@@ -370,6 +413,8 @@ function App() {
     setDistancePickerActive(false);
     setDistancePickerObjects([]);
     setShowMeasurementPanel(false);
+    setIsHardcodedDemo(false);
+    setDemoSceneData(null);
 
     const timestamp = Date.now();
     const reqId = `req_${timestamp}`;
@@ -421,7 +466,10 @@ function App() {
       console.log(`BACKEND RESPONSE RECEIVED - Round-trip time: ${elapsedRoundTrip}s`);
 
       if (data.success) {
+        console.log("Backend success, setting URLs", data.files);
         setSessionId(data.session_id);
+        const isDemo = data.scene_type === 'hardcoded';
+        setIsHardcodedDemo(isDemo);
         setPointCloudUrl(data.files.point_cloud);
         setObjectsUrl(data.files.objects);
         setSemanticUrl(data.files.semantic_scene);
@@ -430,13 +478,24 @@ function App() {
         setPlacedItems([]);
         setRemovedObjects([]);
         setSessionStats({
-          frameCount: data.debug?.frame_count_used_target,
-          processingTime: data.debug?.processing_time_seconds,
+          frameCount: data.debug?.frame_count_used_target || 0,
+          processingTime: data.debug?.processing_time_seconds || 0,
           detectedObjectCount: data.detected_object_count ?? 0,
           mode: mode,
         });
         setProcessingStage('done');
-        setProcessState('LOADING_SCENE');
+        
+        if (isDemo) {
+          setProcessState('READY');
+          setSceneLoaded(true);
+        } else {
+          setProcessState('LOADING_SCENE');
+          // Force READY fallback after backend response to prevent infinite loading screen (Requirement 3)
+          setTimeout(() => {
+            console.warn("Force READY fallback after backend response");
+            setProcessState("READY");
+          }, 5000);
+        }
       } else {
         setProcessState('ERROR');
         alert('Processing failed: ' + (data.error || 'Unknown backend error'));
@@ -477,6 +536,11 @@ function App() {
         currentStage={processingStage} 
         elapsedSeconds={elapsedSeconds}
         sessionId={sessionId}
+        onSkip={() => {
+          console.warn("User skipped loading screen");
+          setProcessState('READY');
+          setSceneLoaded(true);
+        }}
       />
 
       {/* Left sidebar — Design Panel */}
@@ -651,11 +715,12 @@ function App() {
         )}
 
         {/* Scene Ready Banner */}
-        {sceneLoaded && pcStats && (
+        {sceneLoaded && (isHardcodedDemo || pcStats) && (
           <SceneReadyBanner
-            pointCount={pcStats.count}
+            pointCount={pcStats?.count}
             sessionId={sessionId}
             detectedObjectCount={sessionStats?.detectedObjectCount ?? null}
+            isHardcodedDemo={isHardcodedDemo}
           />
         )}
 
@@ -669,43 +734,47 @@ function App() {
 
         {/* 3D Scene */}
         {['LOADING_SCENE', 'READY'].includes(processState) && (
-          <Scene
-            key={pointCloudUrl || 'default'}
-            objects={objects}
-            placedItems={placedItems}
-            selectedId={selectedId}
-            onSelect={handleSelectObject}
-            cameraMode={cameraMode}
-            onUpdatePlacedItem={handleUpdateObject}
-            placementMode={placementItem !== null}
-            onSceneClick={handleSceneClick}
-            viewSettings={viewSettings}
-            showMeasurements={showMeasurementPanel}
-            activeHoverRec={activeHoverRec}
-            showAssistantPanel={showAssistantPanel}
-            showGraphPanel={showGraphPanel}
-            activeGraphSource={activeGraphSource}
-            activeGraphTarget={activeGraphTarget}
-            showWalkablePanel={showWalkablePanel}
-            onWalkableAnalyticsUpdate={setWalkableAnalytics}
-            showCVPanel={false}
-            cvStage={1}
-            cvFrame={0}
-            removedObjects={removedObjects}
-            repairMode={repairMode}
-            showRepairPanel={false}
-            onRepairAnalyticsUpdate={() => {}}
-            pointCloudUrl={pointCloudUrl}
-            fitTrigger={fitTrigger}
-            transformMode={transformMode}
-            onTransformModeChange={setTransformMode}
-            onDeleteSelected={handleDeleteObject}
-            onPointCloudLoad={handlePointCloudLoad}
-            isSceneVisible={processState === 'READY'}
-            roomAnalysis={roomAnalysis}
-            scaleFactor={scaleFactor}
-            distancePickerObjects={distancePickerObjects}
-          />
+          <CanvasErrorBoundary>
+            <Scene
+              key={isHardcodedDemo ? 'demo' : (pointCloudUrl || 'default')}
+              objects={objects}
+              placedItems={placedItems}
+              selectedId={selectedId}
+              onSelect={handleSelectObject}
+              cameraMode={cameraMode}
+              onUpdatePlacedItem={handleUpdateObject}
+              placementMode={placementItem !== null}
+              onSceneClick={handleSceneClick}
+              viewSettings={viewSettings}
+              showMeasurements={showMeasurementPanel}
+              activeHoverRec={activeHoverRec}
+              showAssistantPanel={showAssistantPanel}
+              showGraphPanel={showGraphPanel}
+              activeGraphSource={activeGraphSource}
+              activeGraphTarget={activeGraphTarget}
+              showWalkablePanel={showWalkablePanel}
+              onWalkableAnalyticsUpdate={setWalkableAnalytics}
+              showCVPanel={false}
+              cvStage={1}
+              cvFrame={0}
+              removedObjects={removedObjects}
+              repairMode={repairMode}
+              showRepairPanel={false}
+              onRepairAnalyticsUpdate={() => {}}
+              pointCloudUrl={pointCloudUrl}
+              fitTrigger={fitTrigger}
+              transformMode={transformMode}
+              onTransformModeChange={setTransformMode}
+              onDeleteSelected={handleDeleteObject}
+              onPointCloudLoad={handlePointCloudLoad}
+              isSceneVisible={processState === 'READY'}
+              roomAnalysis={roomAnalysis}
+              scaleFactor={scaleFactor}
+              distancePickerObjects={distancePickerObjects}
+              isHardcodedDemo={isHardcodedDemo}
+              demoSceneData={demoSceneData}
+            />
+          </CanvasErrorBoundary>
         )}
 
         {/* ─── Primary Toolbar ─── */}
@@ -826,7 +895,7 @@ function App() {
             onClose={() => setShowViewSettings(false)}
             onAutoFit={() => setViewSettings(s => ({ ...s, roomScale: 1, floorHeight: -2 }))}
             onReset={() => {
-              setViewSettings({ viewMode: 'hybrid', pointSize: 0.015, pointOpacity: 0.85, wallOpacity: 0.5, floorHeight: -2, roomScale: 1, showGrid: false, showWalls: true, showCeiling: false, showOriginalPointCloud: true, showRepairPoints: false, showEditedPointCloud: false, showObjectDebug: false });
+              setViewSettings({ viewMode: 'hybrid', pointSize: 0.015, pointOpacity: 0.85, wallOpacity: 0.5, floorHeight: -2, roomScale: 1, showGrid: false, showWalls: true, showCeiling: false, showOriginalPointCloud: true, showRepairPoints: false, showEditedPointCloud: false, showObjectDebug: false, showObjectDirections: false, showLabels: false });
               setRepairMode(false);
             }}
             onResetCache={() => { setRemovedObjects([]); }}

@@ -216,6 +216,57 @@ def process_video():
     if file.filename == '':
         return jsonify({"success": False, "error": "No selected file"}), 400
 
+    # Check for hardcoded demo filenames
+    orig_filename = file.filename or ""
+    lower_orig = orig_filename.lower()
+    is_demo1 = lower_orig in ("video1.mp4", "video1(1).mp4", "video_1.mp4") or "video1" in lower_orig
+    is_demo2 = lower_orig in ("video2.mp4", "video2(1).mp4", "video_2.mp4") or "video2" in lower_orig or "video_2" in lower_orig or "bedroom_demo_2" in lower_orig
+    is_demo3 = lower_orig in ("video3.mp4", "video_3.mp4", "kitchen_demo_3.mp4") or "video3" in lower_orig or "video_3" in lower_orig or "kitchen_demo_3" in lower_orig
+
+    if is_demo1 or is_demo2 or is_demo3:
+        demo_session_id = f"demo_{session_id}"
+        session_dir = os.path.join(OUTPUT_BASE_DIR, demo_session_id)
+        os.makedirs(session_dir, exist_ok=True)
+        filename_secured = secure_filename(orig_filename)
+        video_path = os.path.join(session_dir, filename_secured)
+        file.save(video_path)
+        
+        elapsed = time.perf_counter() - request_started
+        print(f"\n--- Demo Scene Request Detected ---")
+        print(f"Filename: {orig_filename} matched hardcoded demo video. Returning demo scene JSON directly.")
+        print(f"Time: {elapsed:.2f}s\n")
+        sys.stdout.flush()
+
+        if is_demo3:
+            json_filename = "video3_hardcoded_scene.json"
+            obj_count = 17
+        elif is_demo2:
+            json_filename = "video2_hardcoded_scene.json"
+            obj_count = 28
+        else:
+            json_filename = "video1_hardcoded_scene.json"
+            obj_count = 19
+
+        return jsonify({
+            "success": True,
+            "session_id": demo_session_id,
+            "scene_type": "hardcoded",
+            "scene_json": f"/outputs/demo_scenes/{json_filename}",
+            "detected_object_count": obj_count,
+            "files": {
+                "point_cloud":   None,
+                "objects":       f"http://127.0.0.1:5000/outputs/demo_scenes/{json_filename}",
+                "trajectory":    None,
+                "semantic_scene": f"http://127.0.0.1:5000/outputs/demo_scenes/{json_filename}",
+                "room_analysis": f"http://127.0.0.1:5000/outputs/demo_scenes/{json_filename}",
+                "scene_graph":   f"http://127.0.0.1:5000/outputs/demo_scenes/{json_filename}"
+            },
+            "debug": {
+                "message": "Returned hardcoded demo scene output",
+                "processing_time_seconds": round(elapsed, 2)
+            }
+        })
+
     # Compute SHA256 hash of the video file for caching
     hasher = hashlib.sha256()
     file.seek(0)

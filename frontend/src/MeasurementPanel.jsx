@@ -294,12 +294,19 @@ export default function MeasurementPanel({
 
         {/* Room Dimensions */}
         <div>
-          <div className="section-label" style={{ marginBottom: 8 }}>Estimated Room Size</div>
+          <div className="section-label" style={{ marginBottom: 8 }}>Room Dimensions</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <StatLine label="Room Width (X)" value={`${calibRoom.width.toFixed(2)} m`} />
-            <StatLine label="Room Length (Z)" value={`${calibRoom.length.toFixed(2)} m`} />
-            <StatLine label="Room Height (Y)" value={`${calibRoom.height.toFixed(2)} m`} />
-            <StatLine label="Estimated Floor Area" value={`${calibRoom.area.toFixed(2)} m²`} highlight />
+            {(() => {
+              const suffix = calibrationInfo.status === 'Calibrated' ? ' (Calibrated)' : ' (Estimated)';
+              return (
+                <>
+                  <StatLine label="Room Width (X)" value={`${calibRoom.width.toFixed(2)} m${suffix}`} />
+                  <StatLine label="Room Length (Z)" value={`${calibRoom.length.toFixed(2)} m${suffix}`} />
+                  <StatLine label="Room Height (Y)" value={`${calibRoom.height.toFixed(2)} m${suffix}`} />
+                  <StatLine label="Estimated Floor Area" value={`${calibRoom.area.toFixed(2)} m²${suffix}`} highlight />
+                </>
+              );
+            })()}
           </div>
         </div>
 
@@ -429,18 +436,25 @@ export default function MeasurementPanel({
                 </span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.75rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Width:</span>
-                  <span>{selectedObjDetails.w.toFixed(2)} m</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Height:</span>
-                  <span>{selectedObjDetails.h.toFixed(2)} m</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Depth:</span>
-                  <span>{selectedObjDetails.d.toFixed(2)} m</span>
-                </div>
+                {(() => {
+                  const suffix = calibrationInfo.status === 'Calibrated' ? ' (Calibrated)' : ' (Estimated)';
+                  return (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Width:</span>
+                        <span>{selectedObjDetails.w.toFixed(2)} m{suffix}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Height:</span>
+                        <span>{selectedObjDetails.h.toFixed(2)} m{suffix}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Depth:</span>
+                        <span>{selectedObjDetails.d.toFixed(2)} m{suffix}</span>
+                      </div>
+                    </>
+                  );
+                })()}
                 <div style={{ borderTop: '1px solid var(--border)', marginTop: 6, paddingTop: 4, color: selectedObjDetails.confColor, fontSize: '0.65rem', fontWeight: 600 }}>
                   {selectedObjDetails.confLabel}
                 </div>

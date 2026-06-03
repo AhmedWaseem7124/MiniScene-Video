@@ -2,10 +2,56 @@ import React, { useMemo } from 'react';
 import { Html, Line } from '@react-three/drei';
 import { generateSceneGraph } from './SceneGraphEngine';
 
-export default function GraphOverlay({ settings, objects, placedItems, hoverSource, hoverTarget }) {
+export default function GraphOverlay({
+  settings,
+  objects,
+  placedItems,
+  hoverSource,
+  hoverTarget,
+  isHardcodedDemo,
+  relations,
+  demoSceneData,
+}) {
   const graphData = useMemo(() => {
+    if (isHardcodedDemo && relations) {
+      const nodes = objects.map(obj => ({
+        id: obj.id,
+        label: obj.label,
+        center: obj.box_3d?.center || [0, 0, 0],
+        size: obj.box_3d?.size || [1, 1, 1],
+      }));
+
+      const edges = relations.map((rel, idx) => {
+        const sourceObj = objects.find(o => o.id === rel.source);
+        const targetObj = objects.find(o => o.id === rel.target);
+
+        let start = sourceObj?.box_3d?.center || [0, 0, 0];
+        let end = targetObj?.box_3d?.center || [0, 0, 0];
+
+        if (!targetObj && demoSceneData?.room) {
+          const wall = demoSceneData.room.walls?.find(w => w.id === rel.target);
+          if (wall) {
+            end = wall.position;
+          } else if (rel.target === 'large_area_rug') {
+            const rug = objects.find(o => o.id === 'large_area_rug');
+            if (rug) end = rug.box_3d?.center;
+          }
+        }
+
+        return {
+          id: `edge-${idx}`,
+          source: rel.source,
+          target: rel.target,
+          relation: rel.relation,
+          start,
+          end,
+        };
+      });
+
+      return { nodes, edges };
+    }
     return generateSceneGraph(objects, placedItems, settings);
-  }, [objects, placedItems, settings]);
+  }, [objects, placedItems, settings, isHardcodedDemo, relations, demoSceneData]);
 
   const getColor = (relation) => {
     switch (relation) {

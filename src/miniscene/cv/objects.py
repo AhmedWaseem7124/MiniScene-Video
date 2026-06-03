@@ -48,6 +48,8 @@ class SceneObject:
     placement_confidence: float = 0.5
     base_position: list[float] | None = None
     placement_category: str = "floor"
+    scale_multiplier: float = 1.0
+    placement_mode: str = "fallback_estimated"
 
 
 
@@ -507,39 +509,73 @@ def deduplicate_objects(objects: list[SceneObject]) -> list[SceneObject]:
         "default": 1.0
     }
 
-    # Group by label
-    grouped: dict[str, list[SceneObject]] = {}
+    # Group objects by label first
+    grouped_by_label: dict[str, list[SceneObject]] = {}
     for obj in objects:
-        grouped.setdefault(obj.label.strip().lower(), []).append(obj)
+        lbl = obj.label.strip().lower()
+        grouped_by_label.setdefault(lbl, []).append(obj)
 
-    merged_objects: list[SceneObject] = []
+    final_merged: list[SceneObject] = []
 
-    for label, group in grouped.items():
+    for label, label_objects in grouped_by_label.items():
         threshold = MERGE_THRESHOLDS.get(label, MERGE_THRESHOLDS["default"])
-        label_merged: list[SceneObject] = []
         
-        for obj in group:
+        # Connected components grouping based on floor XZ distance
+        groups: list[list[SceneObject]] = []
+        for obj in label_objects:
             if not getattr(obj, "source_frames", None):
                 frame_name = f"frame_{obj.representative_frame_index:03d}.jpg" if obj.representative_frame_index is not None else "unknown.jpg"
                 obj.source_frames = [frame_name]
             if not getattr(obj, "merged_from", None):
                 obj.merged_from = [str(obj.object_id)]
 
-            match_idx = -1
-            best_d = 1e9
-            for i, m in enumerate(label_merged):
-                d = float(np.linalg.norm(obj.position_world - m.position_world))
-                if d < threshold and d < best_d:
-                    best_d = d
-                    match_idx = i
-
-            if match_idx == -1:
-                label_merged.append(obj)
+            # Find all existing groups that this object is close to (floor XZ distance only)
+            matched_group_indices = []
+            for idx, gp in enumerate(groups):
+                is_close = False
+                for gp_obj in gp:
+                    d_xz = float(np.linalg.norm(obj.position_world[[0, 2]] - gp_obj.position_world[[0, 2]]))
+                    if d_xz < threshold:
+                        is_close = True
+                        break
+                if is_close:
+                    matched_group_indices.append(idx)
+            
+            if not matched_group_indices:
+                groups.append([obj])
+            elif len(matched_group_indices) == 1:
+                groups[matched_group_indices[0]].append(obj)
             else:
-                m = label_merged[match_idx]
-                print(f"Merging duplicate {m.label}: {obj.object_id} -> {m.object_id}")
+                # Merge multiple groups that are now connected by this object
+                merged_gp = []
+                for idx in sorted(matched_group_indices, reverse=True):
+                    merged_gp.extend(groups.pop(idx))
+                merged_gp.append(obj)
+                groups.append(merged_gp)
+
+        # Merge the objects in each component/group
+        for gp in groups:
+            if len(gp) == 1:
+                final_merged.append(gp[0])
+                continue
+            
+            # Representative is the one with the most observations/highest confidence
+            gp.sort(key=lambda o: (-o.observations, -(o.representative_score or 0.0)))
+            m = gp[0]
+            
+            for obj in gp[1:]:
+                # Calculate floor XZ distance for logging
+                d_xz = float(np.linalg.norm(obj.position_world[[0, 2]] - m.position_world[[0, 2]]))
+                print(f"Merging duplicate {m.label}: {obj.object_id} -> {m.object_id} (floor XZ distance: {d_xz:.3f}m)")
                 
-                # Average position_world
+                # Check overlap of source frames
+                m_frames = set(m.source_frames or [])
+                obj_frames = set(obj.source_frames or [])
+                overlap = m_frames.intersection(obj_frames)
+                if overlap:
+                    print(f"  [overlap] Overlapping source frames: {overlap}")
+
+                # Average position_world (weighted by observations)
                 w_old = max(1, int(m.observations))
                 w_new = max(1, int(obj.observations))
                 total_w = w_old + w_new
@@ -565,17 +601,15 @@ def deduplicate_objects(objects: list[SceneObject]) -> list[SceneObject]:
                 if obj.placement_quality == "estimated" or m.placement_quality == "estimated":
                     m.placement_quality = "estimated"
                 
-                m_frames = set(m.source_frames or [])
-                obj_frames = set(obj.source_frames or [])
                 m.source_frames = sorted(list(m_frames.union(obj_frames)))
                 
                 m_from = set(m.merged_from or [])
                 obj_from = set(obj.merged_from or [])
                 m.merged_from = sorted(list(m_from.union(obj_from)))
 
-        merged_objects.extend(label_merged)
+            final_merged.append(m)
 
-    return merged_objects
+    return final_merged
 
 
 def detect_scene_entities_3d(
@@ -932,9 +966,151 @@ def _descriptor_similarity(a: np.ndarray | None, b: np.ndarray | None) -> float 
     return sim
 
 
+def fit_object_to_point_cloud(
+    obj: SceneObject,
+    points_world: np.ndarray,
+    poses_world_from_cam: list[np.ndarray],
+    intrinsics: CameraIntrinsics,
+) -> bool:
+    """Projects the 3D point cloud into the camera view, finds the points that project
+    inside the 2D bounding box of the detection, clusters them along depth,
+    and updates the object's position, size_m, rotation_y, and placement_mode.
+    Returns True if fit was successful, False otherwise.
+    """
+    import math
+    if points_world is None or len(points_world) == 0:
+        return False
+    if poses_world_from_cam is None or len(poses_world_from_cam) == 0:
+        return False
+    if intrinsics is None:
+        return False
+
+    f_idx = obj.representative_frame_index
+    bbox = obj.representative_bbox_xyxy
+    if f_idx is None or bbox is None or f_idx >= len(poses_world_from_cam):
+        return False
+
+    pose = poses_world_from_cam[f_idx]
+    x1, y1, x2, y2 = bbox
+
+    # Add 10% relative padding to the 2D bounding box to capture points near borders
+    bw = x2 - x1
+    bh = y2 - y1
+    pad_w = int(0.10 * bw)
+    pad_h = int(0.10 * bh)
+    x1 = max(0, x1 - pad_w)
+    x2 = x2 + pad_w
+    y1 = max(0, y1 - pad_h)
+    y2 = y2 + pad_h
+
+    # 1. Project point cloud into camera coordinate space
+    t = pose[:3, 3]
+    R = pose[:3, :3] # rotation matrix: camera-to-world
+    
+    # pts_cam = (points_world - t) @ R (since camera-to-world R is orthogonal, inverse is transpose)
+    pts = np.asarray(points_world, dtype=np.float32)
+    pts_cam = (pts - t.reshape(1, 3)) @ R
+    
+    # 2. Filter points in front of camera
+    x_c = pts_cam[:, 0]
+    y_c = pts_cam[:, 1]
+    z_c = pts_cam[:, 2]
+    
+    front_mask = z_c > 0.1
+    if not np.any(front_mask):
+        return False
+        
+    pts_front = pts[front_mask]
+    z_c_front = z_c[front_mask]
+    
+    # 3. Project to 2D screen coordinates
+    u = (x_c[front_mask] * intrinsics.fx / z_c_front) + intrinsics.cx
+    v = (y_c[front_mask] * intrinsics.fy / z_c_front) + intrinsics.cy
+    
+    # 4. Check if projected points lie inside the 2D bounding box
+    in_box_mask = (u >= x1) & (u <= x2) & (v >= y1) & (v <= y2)
+    if not np.any(in_box_mask):
+        return False
+        
+    pts_in_box = pts_front[in_box_mask]
+    z_c_in_box = z_c_front[in_box_mask]
+    
+    # 5. Group/cluster points along depth (distance from camera)
+    sort_idx = np.argsort(z_c_in_box)
+    z_sorted = z_c_in_box[sort_idx]
+    pts_sorted = pts_in_box[sort_idx]
+    
+    gaps = np.diff(z_sorted)
+    split_indices = np.where(gaps > 0.5)[0] + 1
+    clusters_pts = np.split(pts_sorted, split_indices)
+    
+    # Find the closest cluster with at least 3 points (avoiding noise)
+    target_cluster = None
+    for cluster in clusters_pts:
+        if len(cluster) >= 3:
+            target_cluster = cluster
+            break
+            
+    if target_cluster is None:
+        return False
+        
+    # 6. Associate object with cluster points
+    centroid = np.mean(target_cluster, axis=0)
+    
+    # 7. Estimate orientation and size using 2D PCA on the XZ components
+    pts_2d = target_cluster[:, [0, 2]]
+    mean_2d = np.mean(pts_2d, axis=0)
+    X_2d = pts_2d - mean_2d
+    
+    if len(X_2d) > 1:
+        cov_2d = np.cov(X_2d.T)
+        evals, evecs = np.linalg.eigh(cov_2d)
+        
+        # Primary axis is the eigenvector with the largest eigenvalue (the last one)
+        v_primary = evecs[:, -1]
+        
+        # Calculate yaw rotation (rotation_y)
+        rotation_y = float(math.atan2(v_primary[0], v_primary[1]))
+        
+        # Project XZ onto the evecs (aligned frame)
+        pts_local = X_2d @ evecs
+        dims_xz = np.max(pts_local, axis=0) - np.min(pts_local, axis=0)
+        width_m = float(dims_xz[0])
+        depth_m = float(dims_xz[1])
+    else:
+        rotation_y = 0.0
+        width_m = 0.3
+        depth_m = 0.3
+        
+    # Height of cluster
+    height_m = float(np.max(target_cluster[:, 1]) - np.min(target_cluster[:, 1]))
+    
+    # Ensure minimum dimensions
+    width_m = max(0.1, width_m)
+    height_m = max(0.1, height_m)
+    depth_m = max(0.1, depth_m)
+    
+    # Update object attributes
+    obj.position_world = centroid.astype(np.float32)
+    obj.size_m = (width_m, height_m, depth_m)
+    obj.rotation_y = rotation_y
+    obj.placement_mode = "point_cloud_cluster"
+    obj.placement_confidence = 0.85
+    obj.placement_reason = "placed_from_point_cloud_cluster"
+    obj.orientation_source = "point_cloud_pca"
+    obj.orientation_confidence = 0.85
+    
+    # Calculate facing direction vector
+    obj.facing_direction = [math.sin(rotation_y), 0.0, math.cos(rotation_y)]
+    
+    return True
+
+
 def refine_objects_with_point_cloud(
     objects: list[SceneObject],
     points_world: np.ndarray,
+    poses_world_from_cam: list[np.ndarray] | None = None,
+    intrinsics: CameraIntrinsics | None = None,
     k_neighbors: int = 256,
     max_snap_radius_m: float = 1.8,
 ) -> list[SceneObject]:
@@ -948,18 +1124,26 @@ def refine_objects_with_point_cloud(
         return objects
 
     for obj in objects:
-        d = np.linalg.norm(pts - obj.position_world.reshape(1, 3), axis=1)
-        if d.size == 0:
-            continue
-        order = np.argsort(d)
-        nn = order[: min(k_neighbors, order.size)]
-        if nn.size == 0:
-            continue
-        if float(d[nn[0]]) > max_snap_radius_m:
-            continue
+        # Try fitting to the point cloud cluster along the camera projection ray first
+        fitted = False
+        if poses_world_from_cam is not None and intrinsics is not None:
+            fitted = fit_object_to_point_cloud(obj, points_world, poses_world_from_cam, intrinsics)
+            
+        if not fitted:
+            # Fall back to median nearest-neighbor snapping
+            obj.placement_mode = "fallback_estimated"
+            d = np.linalg.norm(pts - obj.position_world.reshape(1, 3), axis=1)
+            if d.size == 0:
+                continue
+            order = np.argsort(d)
+            nn = order[: min(k_neighbors, order.size)]
+            if nn.size == 0:
+                continue
+            if float(d[nn[0]]) > max_snap_radius_m:
+                continue
 
-        local = pts[nn]
-        obj.position_world = np.median(local, axis=0).astype(np.float32)
+            local = pts[nn]
+            obj.position_world = np.median(local, axis=0).astype(np.float32)
 
     return objects
 
@@ -988,6 +1172,105 @@ def align_objects_to_ground(objects: list[SceneObject], ground_y: float, object_
     return objects
 
 
+def estimate_global_scale(objects: list[SceneObject]) -> tuple[float, str, float]:
+    """Estimate global scene scale based on detected objects vs. known dimensions.
+    
+    Priority:
+    1. door (height = 2.1m)
+    2. bed (length = 2.0m)
+    3. chair (height = 0.9m)
+    4. sofa/couch (width = 2.0m)
+    5. table (width = 1.2m)
+    
+    Returns: (scale_factor, scale_source, scale_confidence)
+    """
+    if not objects:
+        return 1.0, "default", 0.5
+
+    # Known dimensions
+    KNOWN_HEIGHTS = {
+        "door": 2.1,
+        "chair": 0.9,
+    }
+    KNOWN_HORIZONTALS = {
+        "bed": 2.0,       # length
+        "sofa": 2.0,      # width
+        "couch": 2.0,     # width
+        "table": 1.2,      # width
+        "dining table": 1.2,
+    }
+    
+    priority_keys = ["door", "bed", "chair", "sofa", "couch", "table", "dining table"]
+    
+    # Group objects by priority matching
+    candidates = []
+    for obj in objects:
+        lbl = obj.label.strip().lower()
+        # Find which key matches
+        matched_key = None
+        for pk in priority_keys:
+            if pk in lbl:
+                matched_key = pk
+                break
+        if matched_key:
+            candidates.append((obj, matched_key))
+            
+    if not candidates:
+        return 1.0, "default", 0.5
+        
+    # Sort candidates by priority index: door(0) > bed(1) > chair(2) > sofa/couch(3) > table(4)
+    def priority_sort(item):
+        obj, key = item
+        order = ["door", "bed", "chair", "sofa", "couch", "table", "dining table"]
+        try:
+            p_idx = order.index(key)
+        except ValueError:
+            p_idx = len(order)
+        # Use priority index first, then confidence (higher is better)
+        return (p_idx, -(obj.representative_score or 0.0))
+        
+    candidates.sort(key=priority_sort)
+    best_obj, best_key = candidates[0]
+    
+    # Check size_m
+    if best_obj.size_m is None or len(best_obj.size_m) < 3:
+        return 1.0, "default", 0.5
+        
+    w, h, d = best_obj.size_m
+    estimated_size = 1.0
+    known_size = 1.0
+    
+    if best_key in KNOWN_HEIGHTS:
+        estimated_size = h
+        known_size = KNOWN_HEIGHTS[best_key]
+    else:
+        estimated_size = max(w, d)
+        known_size = KNOWN_HORIZONTALS[best_key]
+        
+    if estimated_size <= 0.01:
+        return 1.0, "default", 0.5
+        
+    scale_factor = known_size / estimated_size
+    # Clamp scale factor to a safe range
+    scale_factor = max(0.4, min(2.5, scale_factor))
+    
+    # Calculate scale confidence
+    conf_map = {
+        "door": 0.85,
+        "bed": 0.80,
+        "chair": 0.75,
+        "sofa": 0.75,
+        "couch": 0.75,
+        "table": 0.70,
+        "dining table": 0.70
+    }
+    score = best_obj.representative_score or 0.7
+    scale_confidence = conf_map.get(best_key, 0.7) * score
+    
+    return float(scale_factor), best_obj.label, float(scale_confidence)
+
+
+
 def refine_object_placements(
     objects: list[SceneObject],
     ground_y: float,
@@ -996,21 +1279,20 @@ def refine_object_placements(
     depth_maps: list[np.ndarray] | None = None,
     intrinsics: CameraIntrinsics | None = None,
 ) -> list[SceneObject]:
-    """
-    Refine object 3D positions, snap to walls/floor, spread estimated objects,
-    and estimate realistic rotations/facing directions based on video evidence
-    and spatial relationships.
+    """Refines object placements, handles size estimation (blended with defaults),
+    ensures proportion constraints, projects floor contacts, clamps wall heights,
+    snaps to walls, and calculates orientations based on room layout and semantic relationships.
     """
     import math
     if not objects:
         return objects
 
-    # 1. Determine Room Bounds
+    # 1. Determine Robust Room Bounds using Percentiles
     if points_world is not None and len(points_world) > 0:
         finite_pts = points_world[np.all(np.isfinite(points_world), axis=1)]
         if len(finite_pts) > 0:
-            pc_min = np.min(finite_pts, axis=0)
-            pc_max = np.max(finite_pts, axis=0)
+            pc_min = np.percentile(finite_pts, 1.0, axis=0)
+            pc_max = np.percentile(finite_pts, 99.0, axis=0)
         else:
             pc_min = np.array([-2.5, ground_y, -2.5], dtype=np.float32)
             pc_max = np.array([2.5, ground_y + 3.0, 2.5], dtype=np.float32)
@@ -1018,12 +1300,31 @@ def refine_object_placements(
         pc_min = np.array([-2.5, ground_y, -2.5], dtype=np.float32)
         pc_max = np.array([2.5, ground_y + 3.0, 2.5], dtype=np.float32)
 
-    room_w = float(pc_max[0] - pc_min[0])
-    room_d = float(pc_max[2] - pc_min[2])
-    room_center_x = (pc_min[0] + pc_max[0]) / 2.0
-    room_center_z = (pc_min[2] + pc_max[2]) / 2.0
+    width = float(pc_max[0] - pc_min[0])
+    height = float(pc_max[1] - pc_min[1])
+    length = float(pc_max[2] - pc_min[2])
 
-    # 2. Re-classify lamps to either ceiling_light or standing_lamp
+    clamped_width = np.clip(width, 2.5, 8.0)
+    clamped_height = np.clip(height, 2.2, 3.5)
+    clamped_length = np.clip(length, 2.5, 10.0)
+
+    center_x = (pc_min[0] + pc_max[0]) / 2.0
+    center_z = (pc_min[2] + pc_max[2]) / 2.0
+
+    pc_min[0] = center_x - clamped_width / 2.0
+    pc_max[0] = center_x + clamped_width / 2.0
+    pc_min[1] = ground_y
+    pc_max[1] = ground_y + clamped_height
+    pc_min[2] = center_z - clamped_length / 2.0
+    pc_max[2] = center_z + clamped_length / 2.0
+
+    room_w = clamped_width
+    room_d = clamped_length
+    room_h = clamped_height
+    room_center_x = center_x
+    room_center_z = center_z
+
+    # Re-classify lamps to either ceiling_light or standing_lamp
     for obj in objects:
         lbl_lower = obj.label.strip().lower()
         if lbl_lower in {"lamp", "light"}:
@@ -1032,7 +1333,67 @@ def refine_object_placements(
             else:
                 obj.label = "standing_lamp"
 
-    # 3. Classify Placement Categories (FLOOR, WALL, CEILING)
+    # 2. Object Sizing with Video-Evidence Blending and Proportional Constraints
+    for obj in objects:
+        lbl_lower = obj.label.strip().lower()
+        default_size = DEFAULT_SIZES.get(lbl_lower, (0.8, 0.8, 0.8))
+        def_w, def_h, def_d = default_size
+
+        if obj.size_m is not None:
+            w_est, h_est, d_est = obj.size_m
+            obj.estimated_size = (float(w_est), float(h_est), float(d_est))
+        else:
+            w_est, h_est, d_est = def_w, def_h, def_d
+            obj.estimated_size = default_size
+
+        is_high_conf = (obj.representative_score is not None and obj.representative_score >= 0.6) and (obj.observations >= 2)
+        if is_high_conf:
+            blend_default = 0.4
+            blend_video = 0.6
+        else:
+            blend_default = 0.6
+            blend_video = 0.4
+
+        video_d_est = w_est * (def_d / def_w) if def_w > 0 else def_d
+        
+        final_w = blend_default * def_w + blend_video * w_est
+        final_h = blend_default * def_h + blend_video * h_est
+        final_d = blend_default * def_d + blend_video * video_d_est
+
+        if "bed" in lbl_lower:
+            final_w = np.clip(final_w, 1.3, 2.2)
+            final_d = np.clip(final_d, 1.8, 2.3)
+            final_h = np.clip(final_h, 0.45, 0.85)
+        elif "chair" in lbl_lower:
+            final_w = np.clip(final_w, 0.45, 0.7)
+            final_d = np.clip(final_d, 0.45, 0.7)
+            final_h = np.clip(final_h, 0.75, 1.1)
+        elif "sofa" in lbl_lower or "couch" in lbl_lower:
+            final_w = np.clip(final_w, 1.5, 3.0)
+            final_d = np.clip(final_d, 0.7, 1.1)
+            final_h = np.clip(final_h, 0.7, 1.1)
+        elif "table" in lbl_lower:
+            final_w = np.clip(final_w, 0.8, 2.0)
+            final_d = np.clip(final_d, 0.6, 1.2)
+            final_h = np.clip(final_h, 0.65, 0.9)
+        elif "painting" in lbl_lower or "wall art" in lbl_lower:
+            final_d = np.clip(final_d, 0.02, 0.1)
+        elif "rug" in lbl_lower or "carpet" in lbl_lower:
+            final_h = np.clip(final_h, 0.01, 0.05)
+            final_w = np.clip(final_w, 1.0, 4.0)
+            final_d = np.clip(final_d, 1.0, 5.0)
+        elif "door" in lbl_lower:
+            final_w = np.clip(final_w, 0.7, 1.1)
+            final_h = np.clip(final_h, 1.9, 2.3)
+            final_d = np.clip(final_d, 0.02, 0.1)
+        elif "cupboard" in lbl_lower or "wardrobe" in lbl_lower or "cabinet" in lbl_lower or "shelf" in lbl_lower:
+            final_w = np.clip(final_w, 0.6, 2.0)
+            final_h = np.clip(final_h, 1.0, 2.4)
+            final_d = np.clip(final_d, 0.3, 0.8)
+
+        obj.size_m = (float(final_w), float(final_h), float(final_d))
+
+    # 3. Placement Categories snap classification
     for obj in objects:
         lbl_lower = obj.label.strip().lower()
         if lbl_lower in {"painting", "mirror", "curtain", "clock", "window", "wall art", "tv"}:
@@ -1042,52 +1403,52 @@ def refine_object_placements(
         else:
             obj.placement_category = "floor"
 
-    # 4. Project Floor Contact Points and Spread Estimated Objects
+    # 4. Positioning and Floor Ground Contact
     for obj in objects:
         lbl_lower = obj.label.strip().lower()
         h = obj.size_m[1] if obj.size_m is not None else 1.0
-        
-        # Set default base position and height center
-        obj.base_position = [float(obj.position_world[0]), float(ground_y), float(obj.position_world[2])]
-        obj.position_world[1] = ground_y + h / 2.0
-        
-        # Calculate floor contact point for floor objects if we have camera evidence
-        if obj.placement_category == "floor" and obj.placement_quality != "estimated" and poses_world_from_cam and intrinsics:
-            f_idx = obj.representative_frame_index
-            bbox = obj.representative_bbox_xyxy
-            if f_idx is not None and bbox is not None and f_idx < len(poses_world_from_cam):
-                pose = poses_world_from_cam[f_idx]
-                u_bottom = (bbox[0] + bbox[2]) / 2.0
-                v_bottom = bbox[3]
-                d = float(obj.distance_m) if obj.distance_m > 0 else 1.5
-                
-                try:
-                    p_cam = pixel_to_camera_point(u_bottom, v_bottom, d, intrinsics)
-                    p_world_bottom = camera_to_world(p_cam, pose)
-                    
-                    p_world_bottom[1] = ground_y
-                    p_world_bottom = np.clip(p_world_bottom, pc_min, pc_max)
-                    
-                    obj.base_position = [float(p_world_bottom[0]), float(ground_y), float(p_world_bottom[2])]
-                    obj.position_world = np.array([p_world_bottom[0], ground_y + h / 2.0, p_world_bottom[2]], dtype=np.float32)
-                    obj.placement_quality = "floor-snapped"
-                    obj.placement_confidence = 0.72
-                except Exception as ex:
-                    print(f"Error projecting floor contact point: {ex}")
 
-        # Spread estimated objects across the floor conservatively
+        if obj.placement_category == "floor":
+            obj.base_position = [float(obj.position_world[0]), float(ground_y), float(obj.position_world[2])]
+            obj.position_world[1] = ground_y + h / 2.0
+            
+            if obj.placement_quality != "estimated" and getattr(obj, "placement_mode", "") != "point_cloud_cluster" and poses_world_from_cam and intrinsics:
+                f_idx = obj.representative_frame_index
+                bbox = obj.representative_bbox_xyxy
+                if f_idx is not None and bbox is not None and f_idx < len(poses_world_from_cam):
+                    pose = poses_world_from_cam[f_idx]
+                    u_bottom = (bbox[0] + bbox[2]) / 2.0
+                    v_bottom = bbox[3]
+                    d_val = float(obj.distance_m) if obj.distance_m > 0 else 1.5
+                    
+                    try:
+                        p_cam = pixel_to_camera_point(u_bottom, v_bottom, d_val, intrinsics)
+                        p_world_bottom = camera_to_world(p_cam, pose)
+                        p_world_bottom[1] = ground_y
+                        p_world_bottom = np.clip(p_world_bottom, pc_min, pc_max)
+                        
+                        obj.base_position = [float(p_world_bottom[0]), float(ground_y), float(p_world_bottom[2])]
+                        obj.position_world = np.array([p_world_bottom[0], ground_y + h / 2.0, p_world_bottom[2]], dtype=np.float32)
+                        obj.placement_quality = "floor-snapped"
+                        obj.placement_confidence = 0.72
+                    except Exception as ex:
+                        print(f"Error projecting floor contact point: {ex}")
+        
         elif obj.placement_category == "floor" and obj.placement_quality == "estimated" and obj.representative_bbox_xyxy is not None:
             bbox = obj.representative_bbox_xyxy
             cx_norm = ((bbox[0] + bbox[2]) / 2.0) / 640.0
             cy_norm = bbox[3] / 480.0
             
-            # Reduce spread scaling by 50%
-            world_x = room_center_x + (cx_norm - 0.5) * room_w * 0.5
+            pw = max(1.0, float(bbox[2] - bbox[0]))
+            ph = max(1.0, float(bbox[3] - bbox[1]))
+            area_norm = (pw * ph) / (640.0 * 480.0)
             
-            # Map Z depth conservatively (lerp between front and mid of the room)
-            front_z = room_center_z + room_d * 0.2
-            mid_z = room_center_z
-            world_z = mid_z + cy_norm * (front_z - mid_z)
+            d_index = 0.8 * (cy_norm ** 1.8) + 0.2 * min(1.0, math.sqrt(area_norm) * 2.0)
+            
+            world_x = room_center_x + (cx_norm - 0.5) * room_w * 0.5
+            far_z = room_center_z - room_d * 0.3
+            near_z = room_center_z + room_d * 0.4
+            world_z = far_z + d_index * (near_z - far_z)
             
             margin = 0.2
             world_x = max(pc_min[0] + margin, min(pc_max[0] - margin, world_x))
@@ -1098,31 +1459,29 @@ def refine_object_placements(
             obj.placement_quality = "estimated-spread"
             obj.placement_confidence = 0.55
 
-    # 5. Wall, Floor & Ceiling Placement and Orientation logic
+    # 5. Wall, Floor & Ceiling Snapping and Heights Clamping
     for obj in objects:
         lbl_lower = obj.label.strip().lower()
         h = obj.size_m[1] if obj.size_m is not None else 1.0
-        
-        # Check distance to room boundaries (walls)
+
         dist_left = abs(obj.position_world[0] - pc_min[0])
         dist_right = abs(obj.position_world[0] - pc_max[0])
         dist_back = abs(obj.position_world[2] - pc_min[2])
         dist_front = abs(obj.position_world[2] - pc_max[2])
         
         min_d = min(dist_left, dist_right, dist_back, dist_front)
-        
-        # Category A: Ceiling objects snap to top
+
         if obj.placement_category == "ceiling":
-            ceiling_y = pc_max[1] if pc_max is not None else ground_y + 2.7
-            obj.position_world[1] = ceiling_y - h / 2.0
-            obj.base_position = [float(obj.position_world[0]), float(ceiling_y), float(obj.position_world[2])]
+            obj.position_world[1] = pc_max[1] - h / 2.0
+            obj.base_position = [float(obj.position_world[0]), float(pc_max[1]), float(obj.position_world[2])]
             obj.placement_quality = "ceiling-snapped"
             obj.placement_confidence = 0.85
             obj.rotation_y = 0.0
             obj.facing_direction = [0.0, -1.0, 0.0]
             obj.placement_reason = "attached_to_ceiling"
+            obj.orientation_source = "ceiling_rule"
+            obj.orientation_confidence = 0.85
 
-        # Category B: Wall-mounted objects snap flush to wall at eye level (1.2m - 1.8m)
         elif obj.placement_category == "wall":
             depth = obj.size_m[2] if obj.size_m is not None else 0.1
             
@@ -1146,34 +1505,53 @@ def refine_object_placements(
                 obj.rotation_y = math.pi
                 obj.facing_direction = [0.0, 0.0, -1.0]
                 obj.placement_reason = "placed_against_front_wall_facing_center"
-            
-            # Clamp height Y to eye-level (1.2m - 1.8m above floor)
-            obj.position_world[1] = np.clip(obj.position_world[1], ground_y + 1.2, ground_y + 1.8)
+
+            obj.orientation_source = "wall_alignment_rule"
+            obj.orientation_confidence = 0.90
+
+            if "painting" in lbl_lower or "mirror" in lbl_lower or "clock" in lbl_lower or "wall art" in lbl_lower:
+                obj.position_world[1] = np.clip(obj.position_world[1], ground_y + 1.2, ground_y + 1.8)
+            elif "window" in lbl_lower:
+                obj.position_world[1] = np.clip(obj.position_world[1], ground_y + 1.0, ground_y + 2.0)
+            elif "curtain" in lbl_lower:
+                curt_h = room_h - 0.2
+                obj.size_m = (obj.size_m[0], float(curt_h), obj.size_m[2])
+                obj.position_world[1] = ground_y + curt_h / 2.0
+            elif "tv" in lbl_lower:
+                obj.position_world[1] = np.clip(obj.position_world[1], ground_y + 1.0, ground_y + 1.6)
+
             obj.base_position = [float(obj.position_world[0]), float(ground_y), float(obj.position_world[2])]
             obj.placement_quality = "wall-snapped"
             obj.placement_confidence = 0.85
 
-        # Category C: Floor Objects
-        else:
+        else: # Floor Objects
             obj.position_world[1] = ground_y + h / 2.0
             obj.base_position = [float(obj.position_world[0]), float(ground_y), float(obj.position_world[2])]
             
-            # Floor snap standing furniture close to wall (< 1.5m)
-            if lbl_lower in {"bed", "sofa", "couch", "cupboard", "wardrobe", "cabinet", "shelf"} and min_d < 1.5:
+            snap_threshold = 2.2 if "bed" in lbl_lower else 1.8
+            if lbl_lower in {"bed", "sofa", "couch", "cupboard", "wardrobe", "cabinet", "shelf"} and min_d < snap_threshold:
                 depth = obj.size_m[2] if obj.size_m is not None else 0.5
                 width = obj.size_m[0] if obj.size_m is not None else 1.0
                 
-                if min_d == dist_left:
+                possible_walls = ["left", "right", "back", "front"]
+                if "bed" in lbl_lower:
+                    possible_walls = ["left", "right", "back"]
+                
+                dists = {"left": dist_left, "right": dist_right, "back": dist_back, "front": dist_front}
+                allowed_dists = {k: dists[k] for k in possible_walls}
+                best_wall = min(allowed_dists, key=allowed_dists.get)
+                
+                if best_wall == "left":
                     obj.position_world[0] = pc_min[0] + width / 2.0
                     obj.rotation_y = math.pi / 2.0
                     obj.facing_direction = [1.0, 0.0, 0.0]
                     obj.placement_reason = "placed_against_left_wall_facing_center"
-                elif min_d == dist_right:
+                elif best_wall == "right":
                     obj.position_world[0] = pc_max[0] - width / 2.0
                     obj.rotation_y = -math.pi / 2.0
                     obj.facing_direction = [-1.0, 0.0, 0.0]
                     obj.placement_reason = "placed_against_right_wall_facing_center"
-                elif min_d == dist_back:
+                elif best_wall == "back":
                     obj.position_world[2] = pc_min[2] + depth / 2.0
                     obj.rotation_y = 0.0
                     obj.facing_direction = [0.0, 0.0, 1.0]
@@ -1186,45 +1564,37 @@ def refine_object_placements(
                     
                 obj.placement_quality = "floor-snapped"
                 obj.placement_confidence = 0.75
+                obj.orientation_source = "wall_alignment_rule"
+                obj.orientation_confidence = 0.80
                 obj.base_position = [float(obj.position_world[0]), float(ground_y), float(obj.position_world[2])]
             else:
-                # Default floor orientation faces room center
-                dx = room_center_x - obj.position_world[0]
-                dz = room_center_z - obj.position_world[2]
-                angle = math.atan2(dx, dz)
-                
-                obj.rotation_y = angle
-                obj.facing_direction = [math.sin(angle), 0.0, math.cos(angle)]
-                obj.placement_reason = "oriented_to_face_room_center"
-                obj.placement_confidence = 0.60
+                if getattr(obj, "placement_mode", "") == "point_cloud_cluster":
+                    # Keep PCA orientation
+                    pass
+                else:
+                    dx = room_center_x - obj.position_world[0]
+                    dz = room_center_z - obj.position_world[2]
+                    angle = math.atan2(dx, dz)
+                    
+                    obj.rotation_y = angle
+                    obj.facing_direction = [math.sin(angle), 0.0, math.cos(angle)]
+                    obj.placement_reason = "oriented_to_face_room_center"
+                    obj.placement_confidence = 0.60
+                    obj.orientation_source = "room_center_bias"
+                    obj.orientation_confidence = 0.60
 
-            # Floor Occupancy Zone Heuristics
             if lbl_lower in {"rug", "carpet"}:
                 obj.position_world[0] = room_center_x
                 obj.position_world[2] = room_center_z
                 obj.placement_reason = "centered_on_floor"
                 obj.placement_confidence = 0.80
+                obj.orientation_source = "default_alignment"
+                obj.orientation_confidence = 0.80
             elif lbl_lower in {"table", "dining table"}:
                 obj.position_world[0] = room_center_x + (obj.position_world[0] - room_center_x) * 0.3
                 obj.position_world[2] = room_center_z + (obj.position_world[2] - room_center_z) * 0.3
                 obj.placement_reason = "placed_center_ish"
                 obj.placement_confidence = 0.75
-            elif lbl_lower in {"plant", "potted plant"}:
-                corners = [
-                    [pc_min[0], pc_min[2]],
-                    [pc_min[0], pc_max[2]],
-                    [pc_max[0], pc_min[2]],
-                    [pc_max[0], pc_max[2]]
-                ]
-                best_corner = min(corners, key=lambda c: math.hypot(obj.position_world[0] - c[0], obj.position_world[2] - c[1]))
-                dist = math.hypot(obj.position_world[0] - best_corner[0], obj.position_world[2] - best_corner[1])
-                if dist < 2.0:
-                    offset_x = 0.4 if best_corner[0] == pc_min[0] else -0.4
-                    offset_z = 0.4 if best_corner[1] == pc_min[2] else -0.4
-                    obj.position_world[0] = best_corner[0] + offset_x
-                    obj.position_world[2] = best_corner[1] + offset_z
-                    obj.placement_reason = "placed_near_corner"
-                    obj.placement_confidence = 0.75
 
     # 6. Relationship-Based Orientations
     sofas = [o for o in objects if o.label.strip().lower() in {"sofa", "couch"}]
@@ -1250,11 +1620,15 @@ def refine_object_placements(
             best_sofa.facing_direction = [math.sin(angle), 0.0, math.cos(angle)]
             best_sofa.placement_reason = "oriented_to_face_tv"
             best_sofa.placement_confidence = 0.85
+            best_sofa.orientation_source = "relationship_rule"
+            best_sofa.orientation_confidence = 0.85
             
             best_tv.rotation_y = angle + math.pi
             best_tv.facing_direction = [-math.sin(angle), 0.0, -math.cos(angle)]
             best_tv.placement_reason = "oriented_to_face_sofa"
             best_tv.placement_confidence = 0.85
+            best_tv.orientation_source = "relationship_rule"
+            best_tv.orientation_confidence = 0.85
 
     tables = [o for o in objects if o.label.strip().lower() in {"table", "dining table"}]
     chairs = [o for o in objects if o.label.strip().lower() == "chair"]
@@ -1272,12 +1646,16 @@ def refine_object_placements(
                 c.facing_direction = [math.sin(angle), 0.0, math.cos(angle)]
                 c.placement_reason = "oriented_to_face_table"
                 c.placement_confidence = 0.80
+                c.orientation_source = "relationship_rule"
+                c.orientation_confidence = 0.80
 
     for t in tables:
         t.rotation_y = 0.0
         t.facing_direction = [0.0, 0.0, 1.0]
         t.placement_reason = "aligned_to_room_axes"
         t.placement_confidence = 0.70
+        t.orientation_source = "default_alignment"
+        t.orientation_confidence = 0.70
 
     for o in objects:
         if o.label.strip().lower() in {"rug", "carpet"}:
@@ -1286,13 +1664,7 @@ def refine_object_placements(
             o.placement_reason = "aligned_to_room_axes"
             o.placement_confidence = 0.70
 
-    # 7. Room-Center Bias for uncertain placements
-    for obj in objects:
-        if obj.placement_confidence < 0.70:
-            obj.position_world[0] = room_center_x + (obj.position_world[0] - room_center_x) * 0.7
-            obj.position_world[2] = room_center_z + (obj.position_world[2] - room_center_z) * 0.7
-
-    # Final Boundary Clamping & Base Position update
+    # 7. Boundary Clamping & Final Base Position Check
     margin = 0.2
     for obj in objects:
         obj.position_world[0] = np.clip(obj.position_world[0], pc_min[0] + margin, pc_max[0] - margin)
@@ -1328,12 +1700,40 @@ def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) 
         pts = np.asarray([s.position_world for s in tr.samples], dtype=np.float32)
         if pts.size == 0:
             continue
-        center = np.median(pts, axis=0)
-        d_median = float(np.median(np.asarray([s.distance_m for s in tr.samples], dtype=np.float32)))
+        
+        # 1. Median-based Outlier Rejection (distance threshold 2.0m)
+        median_pos = np.median(pts, axis=0)
+        valid_samples = []
+        for s in tr.samples:
+            if np.linalg.norm(s.position_world - median_pos) < 2.0:
+                valid_samples.append(s)
+        if not valid_samples:
+            valid_samples = tr.samples
+            
+        # 2. Multi-frame Weighted Placement
+        total_weight = 0.0
+        weighted_pos = np.zeros((3,), dtype=np.float32)
+        weighted_dist = 0.0
+        
+        for s in valid_samples:
+            bbox_w = (s.bbox_xyxy[2] - s.bbox_xyxy[0]) if s.bbox_xyxy else 100.0
+            bbox_h = (s.bbox_xyxy[3] - s.bbox_xyxy[1]) if s.bbox_xyxy else 100.0
+            weight = max(0.01, float(s.score or 0.5)) * (bbox_w * bbox_h)
+            
+            weighted_pos += s.position_world * weight
+            weighted_dist += s.distance_m * weight
+            total_weight += weight
+            
+        if total_weight > 0:
+            center = weighted_pos / total_weight
+            d_median = float(weighted_dist / total_weight)
+        else:
+            center = median_pos
+            d_median = float(np.median(np.asarray([s.distance_m for s in valid_samples], dtype=np.float32)))
 
         widths_m = []
         heights_m = []
-        for s in tr.samples:
+        for s in valid_samples:
             if s.bbox_xyxy is not None:
                 widths_m.append(_sample_width_m(s.bbox_xyxy, s.distance_m))
                 heights_m.append(_sample_height_m(s.bbox_xyxy, s.distance_m))
@@ -1346,16 +1746,16 @@ def _objects_from_tracks(tracks: list[SceneTrack], merge_radius_m: float = 1.0) 
         else:
             size_m = DEFAULT_SIZES.get(tr.label.strip().lower(), (0.5, 0.5, 0.5))
 
-        p_q = "estimated" if any(getattr(s, "placement_quality", "good") == "estimated" for s in tr.samples) else "good"
+        p_q = "estimated" if any(getattr(s, "placement_quality", "good") == "estimated" for s in valid_samples) else "good"
 
-        best_sample = max(tr.samples, key=lambda s: float(s.score or 0.0))
+        best_sample = max(valid_samples, key=lambda s: float(s.score or 0.0))
         candidates.append(
             SceneObject(
                 object_id=next_id,
                 label=tr.label,
                 position_world=center.astype(np.float32),
                 distance_m=d_median,
-                observations=len(tr.samples),
+                observations=len(valid_samples),
                 size_m=size_m,
                 representative_frame_index=int(best_sample.frame_index),
                 representative_bbox_xyxy=best_sample.bbox_xyxy,
@@ -2227,6 +2627,12 @@ def write_objects_json(
             "size": size,
             "measurement_confidence": measurement_confidence,
             "measurement_source": measurement_source,
+            "scale_multiplier": float(getattr(obj, "scale_multiplier", 1.0)),
+            "estimated_size": list(obj.estimated_size) if getattr(obj, "estimated_size", None) is not None else size,
+            "scale_source": metadata.get("scale_source", "estimated_from_point_cloud") if metadata else "estimated_from_point_cloud",
+            "orientation_source": getattr(obj, "orientation_source", "estimated_from_detection"),
+            "orientation_confidence": float(getattr(obj, "orientation_confidence", 0.5)),
+            "placement_mode": getattr(obj, "placement_mode", "fallback_estimated"),
         }
         if getattr(obj, "source_frames", None) is not None:
             item_payload["source_frames"] = obj.source_frames
