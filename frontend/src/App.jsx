@@ -145,8 +145,20 @@ const FURNITURE_EMOJIS = {
 };
 
 function App() {
-  const [objects, setObjects] = useState([]);
-  const [placedItems, setPlacedItems] = useState([]);
+  const [sceneFurniture, setSceneFurniture] = useState([]);
+  const objects = sceneFurniture.filter(item => item.detected);
+  const placedItems = sceneFurniture.filter(item => !item.detected);
+
+  const [compareOriginal, setCompareOriginal] = useState(false);
+  const [replacingObjectId, setReplacingObjectId] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
+
+  const sceneFurnitureRef = useRef([]);
+  useEffect(() => {
+    sceneFurnitureRef.current = sceneFurniture;
+  }, [sceneFurniture]);
+
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [cameraMode, setCameraMode] = useState('orbit');
@@ -268,7 +280,7 @@ function App() {
     setSemanticUrl(data.files.semantic_scene);
     setAnalysisUrl(data.files.room_analysis);
     setGraphUrl(data.files.scene_graph);
-    setPlacedItems([]);
+    setSceneFurniture([]);
     setRemovedObjects([]);
     setSessionStats({
       frameCount: data.debug?.frame_count_used_target || 0,
@@ -282,7 +294,31 @@ function App() {
     setPendingDemoScene(null);
   }, []);
 
-  // Handle Ctrl + Shift + D keyboard shortcut to toggle showCameraDebug, and Ctrl + Shift + S to skip demo processing
+  const handleUndo = useCallback(() => {
+    setHistory(prevHistory => {
+      if (prevHistory.length === 0) return prevHistory;
+      const previousStateJson = prevHistory[prevHistory.length - 1];
+      const nextHistory = prevHistory.slice(0, -1);
+      
+      setRedoStack(prevRedo => [...prevRedo, JSON.stringify(sceneFurnitureRef.current)]);
+      setSceneFurniture(JSON.parse(previousStateJson));
+      return nextHistory;
+    });
+  }, []);
+
+  const handleRedo = useCallback(() => {
+    setRedoStack(prevRedo => {
+      if (prevRedo.length === 0) return prevRedo;
+      const nextStateJson = prevRedo[prevRedo.length - 1];
+      const nextRedo = prevRedo.slice(0, -1);
+      
+      setHistory(prevHistory => [...prevHistory, JSON.stringify(sceneFurnitureRef.current)]);
+      setSceneFurniture(JSON.parse(nextStateJson));
+      return nextRedo;
+    });
+  }, []);
+
+  // Handle keyboard shortcuts: Ctrl+Shift+D for camera debug, Ctrl+Shift+S for demo skip, Ctrl+Z for undo, Ctrl+Y for redo
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) {
@@ -304,10 +340,20 @@ function App() {
           }
         }
       }
+      // Ctrl + Z (Undo)
+      if (e.ctrlKey && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        handleUndo();
+      }
+      // Ctrl + Y (Redo)
+      if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        handleRedo();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [loadDemoScene]);
+  }, [loadDemoScene, handleUndo, handleRedo]);
 
   // Load detected objects whenever objectsUrl changes
   useEffect(() => {
@@ -333,6 +379,35 @@ function App() {
           setObjectDetectionMetadata(null);
         }
 
+        const mapLabelToModelType = (label) => {
+          const l = label.toLowerCase();
+          if (l.includes('curtain') || l.includes('blind') || l.includes('rail')) return 'Curtain';
+          if (l.includes('king')) return 'KingBed';
+          if (l.includes('bed_frame') || l.includes('bedding') || (l.includes('bed') && !l.includes('side'))) return 'Bed';
+          if (l.includes('nightstand') || l.includes('bedside') || l.includes('drawer')) return 'BedsideTable';
+          if (l.includes('refrigerator') || l.includes('fridge')) return 'Refrigerator';
+          if (l.includes('oven')) return 'OvenStack';
+          if (l.includes('display_cabinet') || (l.includes('display') && l.includes('cabinet'))) return 'DisplayCabinet';
+          if (l.includes('kitchen_cabinet') || l.includes('lower_kitchen') || l.includes('base_cabinet') || l.includes('cabinet_main')) return 'KitchenCabinet';
+          if (l.includes('wardrobe')) return 'Wardrobe';
+          if (l.includes('console') || l.includes('vanity')) return 'Console';
+          if (l.includes('mirror')) return 'WallMirror';
+          if (l.includes('pendant') || l.includes('chandelier')) return 'PendantLight';
+          if (l.includes('rug') || l.includes('carpet')) return 'Rug';
+          if (l.includes('lounge')) return 'Armchair';
+          if (l.includes('tv_wall') || l.includes('tv') || l.includes('screen')) return 'TVStand';
+          if (l.includes('cabinet') || l.includes('cupboard')) return 'Cupboard';
+          if (l.includes('ceiling_light') || l.includes('light') || l.includes('lamp') || l.includes('sconce')) return 'Light';
+          if (l.includes('sofa') || l.includes('sectional') || l.includes('chaise')) return 'Sofa';
+          if (l.includes('table')) return 'Table';
+          if (l.includes('chair') || l.includes('stool') || l.includes('ottoman') || l.includes('seat')) return 'Chair';
+          if (l.includes('painting') || l.includes('wall_art') || l.includes('canvas') || l.includes('art') || l.includes('artwork')) return 'Painting';
+          if (l.includes('bookshelf')) return 'Bookshelf';
+          if (l.includes('plant') || l.includes('potted plant')) return 'Plant';
+          if (l.includes('decoration')) return 'Decoration';
+          return 'Decoration';
+        };
+
         // Normalise each detected object to a consistent shape defensively (Requirements 4, 6, 7)
         const normalised = (items || [])
           .filter(obj => obj !== null && typeof obj === 'object')
@@ -343,20 +418,39 @@ function App() {
             const rawSize = obj.size_m || obj.size || obj.box_3d?.size || obj.dimensions;
             const size = normalizeSize(rawSize);
 
+            const rotationY = obj.rotation_y ?? (Array.isArray(obj.rotation) ? obj.rotation[1] : (obj.rotation?.y ?? 0));
+            const scale = Array.isArray(obj.scale) ? obj.scale : [1.0, 1.0, 1.0];
+            const modelType = mapLabelToModelType(obj.label || 'object');
+
             return {
               ...obj,
               id: obj.id || obj.object_id || `det_${idx}`,
-              label: obj.label || 'object',
-              confidence: obj.average_score ?? obj.representative_score ?? obj.confidence ?? 0,
-              position_world: pos,
-              box_3d: { center: pos, size },
+              name: obj.name || obj.label || 'Detected Object',
+              type: modelType,
+              category: obj.placementType || 'floor',
+              position: pos,
+              rotation: [0, rotationY, 0],
+              scale: scale,
+              size: size,
+              color: obj.color || '#d6cabc',
+              material: obj.material || 'matte',
+              confidence: obj.average_score ?? obj.representative_score ?? obj.confidence ?? 1.0,
+              editable: true,
+              detected: true,
+
+              // Backup of original state
+              originalPosition: [...pos],
+              originalRotation: [0, rotationY, 0],
+              originalScale: [...scale],
+              originalColor: obj.color || '#d6cabc',
+              originalMaterial: obj.material || 'matte'
             };
           });
 
-        setObjects(normalised);
+        setSceneFurniture(normalised);
       })
       .catch(() => {
-        setObjects([]);
+        setSceneFurniture([]);
         setObjectDetectionMetadata(null);
       });
   }, [objectsUrl]);
@@ -430,43 +524,134 @@ function App() {
   };
 
   const handleDeleteObject = useCallback((id) => {
-    const deletedObj = objects.find(o => o.id === id);
-    if (deletedObj) {
+    setHistory(h => [...h, JSON.stringify(sceneFurnitureRef.current)]);
+    setRedoStack([]);
+
+    const deletedObj = sceneFurnitureRef.current.find(o => o.id === id);
+    if (deletedObj && deletedObj.detected) {
       setRemovedObjects(prev => {
         const updated = [...prev, deletedObj];
         console.log("Object deleted and tracked for repair:", deletedObj.label);
         return updated;
       });
     }
-    setObjects(prev => prev.filter(o => o.id !== id));
-    setPlacedItems(prev => prev.filter(p => p.id !== id));
+
+    setSceneFurniture(prev => prev.filter(item => item.id !== id));
     if (selectedId === id) setSelectedId(null);
-  }, [objects, selectedId]);
+  }, [selectedId]);
 
   const handleDuplicatePlaced = useCallback((item) => {
-    if (objects.find(o => o.id === item.id)) return;
+    if (!item) return;
+    const newId = `dup_${Math.random().toString(36).substr(2, 9)}`;
     const newItem = { 
       ...item, 
-      id: Math.random().toString(), 
-      position: [item.position[0] + 0.6, item.position[1], item.position[2] + 0.3],
-      primaryColor: item.primaryColor,
-      secondaryColor: item.secondaryColor,
-      accentColor: item.accentColor,
-      color: item.color,
-      material: item.material,
-      placementType: item.placementType
+      id: newId, 
+      name: `${item.name || item.type || 'Object'} (Copy)`,
+      position: [item.position[0] + 0.5, item.position[1], item.position[2] + 0.5],
+      originalPosition: [item.position[0] + 0.5, item.position[1], item.position[2] + 0.5],
+      originalRotation: [...item.rotation],
+      originalScale: [...item.scale],
+      originalColor: item.color,
+      originalMaterial: item.material,
+      detected: false
     };
-    setPlacedItems(prev => [...prev, newItem]);
-    setSelectedId(newItem.id);
-  }, [objects]);
 
-  const handleUpdateObject = useCallback((id, updates) => {
-    setPlacedItems(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
-    setObjects(prev => prev.map(obj => obj.id === id ? { ...obj, ...updates } : obj));
+    setHistory(h => [...h, JSON.stringify(sceneFurnitureRef.current)]);
+    setRedoStack([]);
+    setSceneFurniture(prev => [...prev, newItem]);
+    setSelectedId(newItem.id);
   }, []);
 
+  const handleUpdateObject = useCallback((id, updates) => {
+    setHistory(h => [...h, JSON.stringify(sceneFurnitureRef.current)]);
+    setRedoStack([]);
+    setSceneFurniture(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+  }, []);
+
+  const handleSnapToWall = useCallback((id) => {
+    const obj = sceneFurnitureRef.current.find(item => item.id === id);
+    if (!obj) return;
+
+    let roomW = 8.0;
+    let roomL = 8.0;
+
+    if (isHardcodedDemo && demoSceneData?.room?.dimensions) {
+      roomW = demoSceneData.room.dimensions.width;
+      roomL = demoSceneData.room.dimensions.length;
+    } else if (pcStats?.size) {
+      roomW = pcStats.size[0];
+      roomL = pcStats.size[2];
+    }
+
+    const [w, h, d] = obj.size || [1.0, 1.0, 1.0];
+    const [scaleX, scaleY, scaleZ] = obj.scale || [1.0, 1.0, 1.0];
+    const scaledW = w * scaleX;
+    const scaledD = d * scaleZ;
+
+    const x = obj.position[0];
+    const z = obj.position[2];
+
+    const distLeft = Math.abs(x - (-roomW / 2));
+    const distRight = Math.abs(x - (roomW / 2));
+    const distBack = Math.abs(z - (-roomL / 2));
+    const distFront = Math.abs(z - (roomL / 2));
+
+    const minDist = Math.min(distLeft, distRight, distBack, distFront);
+
+    let newX = x;
+    let newZ = z;
+    let rotY = obj.rotation[1];
+
+    if (minDist === distLeft) {
+      newX = -roomW / 2 + scaledW / 2;
+      rotY = Math.PI / 2;
+    } else if (minDist === distRight) {
+      newX = roomW / 2 - scaledW / 2;
+      rotY = -Math.PI / 2;
+    } else if (minDist === distBack) {
+      newZ = -roomL / 2 + scaledD / 2;
+      rotY = 0;
+    } else {
+      newZ = roomL / 2 - scaledD / 2;
+      rotY = Math.PI;
+    }
+
+    handleUpdateObject(id, {
+      position: [newX, obj.position[1], newZ],
+      rotation: [0, rotY, 0]
+    });
+  }, [isHardcodedDemo, demoSceneData, pcStats, handleUpdateObject]);
+
+  const handleResetObject = useCallback((id) => {
+    const obj = sceneFurnitureRef.current.find(item => item.id === id);
+    if (!obj) return;
+
+    handleUpdateObject(id, {
+      position: obj.originalPosition ? [...obj.originalPosition] : [0, 0, 0],
+      rotation: obj.originalRotation ? [...obj.originalRotation] : [0, 0, 0],
+      scale: obj.originalScale ? [...obj.originalScale] : [1, 1, 1],
+      color: obj.originalColor || '#ffffff',
+      material: obj.originalMaterial || 'matte'
+    });
+  }, [handleUpdateObject]);
+
   const handleLibrarySelect = (itemConfig) => {
-    setPlacementItem(itemConfig);
+    if (replacingObjectId) {
+      handleUpdateObject(replacingObjectId, {
+        name: itemConfig.name,
+        type: itemConfig.type,
+        category: itemConfig.category || 'floor',
+        size: itemConfig.size,
+        primaryColor: itemConfig.defaultColor || '#d6cabc',
+        secondaryColor: itemConfig.defaultColor || '#d6cabc',
+        accentColor: itemConfig.defaultColor || '#d6cabc',
+        color: itemConfig.defaultColor || '#d6cabc',
+        material: itemConfig.material || 'matte'
+      });
+      setReplacingObjectId(null);
+    } else {
+      setPlacementItem(itemConfig);
+    }
     setShowLibrary(false);
   };
 
@@ -543,18 +728,29 @@ function App() {
         id: Math.random().toString(),
         name: placementItem.name,
         type: placementItem.type,
+        category: placementItem.category || 'floor',
         position: [finalX, y, finalZ],
         rotation: finalRot,
         scale: scale,
         size: size,
+        color: defaultColor,
         primaryColor: defaultColor,
         secondaryColor: defaultColor,
         accentColor: defaultColor,
-        color: defaultColor,
         material: placementItem.material || 'matte',
-        placementType: placementItem.placementType || 'floor'
+        confidence: 1.0,
+        editable: true,
+        detected: false,
+
+        originalPosition: [finalX, y, finalZ],
+        originalRotation: finalRot,
+        originalScale: scale,
+        originalColor: defaultColor,
+        originalMaterial: placementItem.material || 'matte'
       };
-      setPlacedItems(prev => [...prev, newItem]);
+      setHistory(h => [...h, JSON.stringify(sceneFurnitureRef.current)]);
+      setRedoStack([]);
+      setSceneFurniture(prev => [...prev, newItem]);
       setPlacementItem(null);
       setSelectedId(newItem.id);
     }
@@ -573,6 +769,7 @@ function App() {
         id: "sofa_placed_test",
         name: "Sofa 3-Seat",
         type: type,
+        category: "floor",
         position: [x, y_coord, z],
         rotation: [0, 0, 0],
         scale: scale,
@@ -582,10 +779,19 @@ function App() {
         accentColor: "#2b2b2b",
         color: "#2b2b2b",
         material: "leather",
-        placementType: "floor"
+        confidence: 1.0,
+        editable: true,
+        detected: false,
+        originalPosition: [x, y_coord, z],
+        originalRotation: [0, 0, 0],
+        originalScale: scale,
+        originalColor: "#2b2b2b",
+        originalMaterial: "leather"
       };
       console.log("TRIGGERING ADD FURNITURE MOCK VIA JS DIRECT");
-      setPlacedItems(prev => [...prev, newItem]);
+      setHistory(h => [...h, JSON.stringify(sceneFurnitureRef.current)]);
+      setRedoStack([]);
+      setSceneFurniture(prev => [...prev, newItem]);
       setSelectedId(newItem.id);
     };
     return () => {
@@ -603,6 +809,7 @@ function App() {
       id: Math.random().toString(), 
       name: rec.name, 
       type: rec.type, 
+      category: placementType,
       position: rec.position, 
       rotation: rec.rotation, 
       scale: [1, 1, 1],
@@ -612,9 +819,18 @@ function App() {
       accentColor: defaultColor,
       color: defaultColor,
       material: material,
-      placementType: placementType
+      confidence: 1.0,
+      editable: true,
+      detected: false,
+      originalPosition: rec.position,
+      originalRotation: rec.rotation,
+      originalScale: [1, 1, 1],
+      originalColor: defaultColor,
+      originalMaterial: material
     };
-    setPlacedItems(prev => [...prev, newItem]);
+    setHistory(h => [...h, JSON.stringify(sceneFurnitureRef.current)]);
+    setRedoStack([]);
+    setSceneFurniture(prev => [...prev, newItem]);
     setSelectedId(newItem.id);
     setActiveHoverRec(null);
   };
@@ -627,6 +843,10 @@ function App() {
   }, []);
 
   const handleUploadVideo = async (file, mode = 'fast') => {
+    console.log("Reconstruct clicked", file, mode);
+    console.log("Starting processing");
+    console.log("processState:", processState);
+
     setShowVideoUpload(false);
     
     // Clear any old scene state
@@ -636,8 +856,7 @@ function App() {
     }
     setPendingDemoScene(null);
 
-    setObjects([]);
-    setPlacedItems([]);
+    setSceneFurniture([]);
     setSelectedId(null);
     setSceneLoaded(false);
     setPcStats(null);
@@ -759,7 +978,6 @@ function App() {
           setSemanticUrl(data.files.semantic_scene);
           setAnalysisUrl(data.files.room_analysis);
           setGraphUrl(data.files.scene_graph);
-          setPlacedItems([]);
           setRemovedObjects([]);
           setSessionStats({
             frameCount: data.debug?.frame_count_used_target || 0,
@@ -852,8 +1070,7 @@ function App() {
     }
     setPendingDemoScene(null);
 
-    setObjects([]);
-    setPlacedItems([]);
+    setSceneFurniture([]);
     setSelectedId(null);
     setSceneLoaded(true);
     setPcStats(null);
@@ -939,7 +1156,7 @@ function App() {
       }
       
       // Clamp furniture inside new boundaries
-      setPlacedItems(items => items.map(item => {
+      setSceneFurniture(items => items.map(item => {
         const [w, h, d] = item.size || [1.0, 1.0, 1.0];
         let [x, y, z] = item.position;
         
@@ -963,11 +1180,11 @@ function App() {
         
         // Ground Y position
         let targetY = y;
-        if (item.placementType === 'ceiling' || item.type === 'PendantLight') {
+        if (item.category === 'ceiling' || item.type === 'PendantLight') {
           targetY = height - h / 2;
-        } else if (item.placementType === 'rug' || item.type === 'Rug') {
+        } else if (item.category === 'rug' || item.type === 'Rug') {
           targetY = 0.01;
-        } else if (item.placementType === 'wall' || item.type === 'Mirror' || item.type === 'Painting') {
+        } else if (item.category === 'wall' || item.type === 'Mirror' || item.type === 'Painting') {
           targetY = Math.max(h / 2, Math.min(height - h / 2, y));
         } else {
           targetY = h / 2;
@@ -987,14 +1204,13 @@ function App() {
   };
 
   const handleSave = () => {
-    const saveData = { placedItems, timestamp: Date.now(), sessionId };
+    const saveData = { sceneFurniture, timestamp: Date.now(), sessionId };
     localStorage.setItem('miniscene_layout', JSON.stringify(saveData));
-    // Brief flash feedback
     alert('Layout saved to browser storage!');
   };
 
   const handleExport = () => {
-    let filename = 'miniscene_layout.json';
+    let filename = 'edited_scene.json';
     let exportData = {};
     
     if (sceneType === 'scratch') {
@@ -1009,7 +1225,7 @@ function App() {
           timestamp: new Date().toISOString()
         },
         room: demoSceneData?.room,
-        placed_furniture: placedItems.map(item => ({
+        placed_furniture: sceneFurniture.map(item => ({
           id: item.id,
           name: item.name,
           type: item.type,
@@ -1022,11 +1238,20 @@ function App() {
           secondaryColor: item.secondaryColor,
           accentColor: item.accentColor,
           material: item.material,
-          placementType: item.placementType
+          placementType: item.category
         }))
       };
     } else {
-      exportData = { version: 1, session_id: sessionId, placed_furniture: placedItems, timestamp: new Date().toISOString() };
+      exportData = sceneFurniture.map(item => ({
+        id: item.id,
+        type: item.type?.toLowerCase() || item.type || 'object',
+        position: item.position.map(val => parseFloat(val.toFixed(3))),
+        rotation: item.rotation.map(val => parseFloat(val.toFixed(3))),
+        scale: item.scale.map(val => parseFloat(val.toFixed(3))),
+        color: item.color,
+        material: item.material,
+        detected: !!item.detected
+      }));
     }
     
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -1293,6 +1518,7 @@ function App() {
                 !showVideoUpload &&
                 !(typeof process !== 'undefined' && process.env?.NODE_ENV === 'production' || import.meta.env?.PROD || import.meta.env?.MODE === 'production')
               }
+              compareOriginal={compareOriginal}
             />
           </CanvasErrorBoundary>
         )}
@@ -1321,6 +1547,21 @@ function App() {
 
           {hasScene && (
             <>
+              <div className="toolbar-divider" />
+              {/* Compare Original */}
+              <button
+                className="btn-primary"
+                style={{
+                  background: compareOriginal ? 'rgba(6,182,212,0.2)' : 'transparent',
+                  border: `1px solid ${compareOriginal ? 'var(--teal)' : 'var(--border)'}`,
+                  color: compareOriginal ? 'var(--teal)' : 'var(--text-main)',
+                }}
+                onClick={() => setCompareOriginal(prev => !prev)}
+                title="Compare current layout with original layout"
+              >
+                <Sliders size={17} /> Compare Original
+              </button>
+
               <div className="toolbar-divider" />
               {/* Room Settings */}
               <button
@@ -1526,6 +1767,14 @@ function App() {
             transformMode={transformMode}
             onTransformModeChange={setTransformMode}
             floorHeight={viewSettings.floorHeight}
+            isHardcodedDemo={isHardcodedDemo}
+            compareOriginal={compareOriginal}
+            onOpenReplaceLibrary={(id) => {
+              setReplacingObjectId(id);
+              setShowLibrary(true);
+            }}
+            onSnapToWall={handleSnapToWall}
+            onResetObject={handleResetObject}
           />
         )}
       </AnimatePresence>

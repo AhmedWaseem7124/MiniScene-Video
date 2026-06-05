@@ -865,8 +865,9 @@ function WalkControls() {
 // ─── Material Presets & Part Types Customization ───────────────────────────
 const MATERIAL_PRESETS = {
   fabric: { roughness: 0.9, metalness: 0.0, opacity: 0.95 },
-  leather: { roughness: 0.7, metalness: 0.05, opacity: 1.0 },
-  wood: { roughness: 0.5, metalness: 0.05, opacity: 1.0 },
+  velvet: { roughness: 0.9, metalness: 0.0, opacity: 0.95 },
+  leather: { roughness: 0.5, metalness: 0.05, opacity: 1.0 },
+  wood: { roughness: 0.8, metalness: 0.05, opacity: 1.0 },
   metal: { roughness: 0.2, metalness: 0.9, opacity: 1.0 },
   marble: { roughness: 0.1, metalness: 0.1, opacity: 1.0 },
   glass: { roughness: 0.1, metalness: 0.9, opacity: 0.4, transparent: true },
@@ -914,7 +915,7 @@ function getPartType(type, defaultColorHex) {
   return 'primary';
 }
 
-function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, isHardcodedDemo, viewSettings, demoSceneData, onDraggingChange }) {
+function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, isHardcodedDemo, viewSettings, demoSceneData, onDraggingChange, compareOriginal }) {
   const outerGroupRef = useRef();
   const innerGroupRef = useRef();
   const [ready, setReady] = useState(false);
@@ -1126,17 +1127,27 @@ function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, is
       position={item.position || [0, 0, 0]}
       rotation={item.rotation || [0, 0, 0]}
       scale={groupScale}
-      onClick={e => { e.stopPropagation(); onSelect(item.id); }}
+      onClick={e => {
+        if (compareOriginal) return;
+        e.stopPropagation();
+        onSelect(item.id);
+      }}
     >
       <group scale={modelScale} position={modelOffset}>
         {renderModel(item.type)}
       </group>
+      {selected && !compareOriginal && (
+        <lineSegments>
+          <edgesGeometry args={[new THREE.BoxGeometry(1.01, 1.01, 1.01)]} />
+          <lineBasicMaterial color="#06b6d4" linewidth={2} depthWrite={false} transparent opacity={0.8} />
+        </lineSegments>
+      )}
     </group>
   );
 
   return (
     <group ref={outerGroupRef}>
-      {selected && ready && innerGroupRef.current && (
+      {selected && ready && innerGroupRef.current && !compareOriginal && (
         <TransformControls
           object={innerGroupRef.current}
           mode={transformMode || 'translate'}
@@ -1534,6 +1545,7 @@ export default function Scene({
   isHardcodedDemo,
   demoSceneData,
   showCameraDebug,
+  compareOriginal,
 }) {
   useEffect(() => {
     console.log("Scene mounted", pointCloudUrl);
@@ -1570,7 +1582,7 @@ export default function Scene({
     return [minX * scaleFactor, maxX * scaleFactor, minZ * scaleFactor, maxZ * scaleFactor];
   }, [pcStats, scaleFactor, isHardcodedDemo, demoSceneData]);
 
-  const alignedObjects = useMemo(() => {
+  const alignObjectsList = useCallback((list) => {
     const FLOOR_Y = isHardcodedDemo ? 0 : (viewSettings.floorHeight || -2);
     const FLOOR_Y_SCALED = FLOOR_Y * scaleFactor;
     
@@ -1603,7 +1615,7 @@ export default function Scene({
         return null;
       };
 
-      return objects.map(obj => {
+      return list.map(obj => {
         // Clone and apply snapToWall to prevent mutating original state directly
         const roomObj = { width: roomW, length: roomD, height: roomH };
         const clonedObj = {
@@ -1643,7 +1655,6 @@ export default function Scene({
             } else if (targetId.includes('right')) {
               snapX = rightWallX - d / 2;
             } else if (targetId.includes('front') || (targetId.includes('back') && targetId.includes('window'))) {
-              // In Video 4, the back wall is at negative Z (minimum Z), which is frontWallZ
               snapZ = frontWallZ + d / 2;
             } else if (targetId.includes('back') || targetId.includes('entrance')) {
               snapZ = backWallZ - d / 2;
@@ -1688,7 +1699,7 @@ export default function Scene({
           }
         } else if (labelLower.includes('lamp') && !cat.includes('ceiling') && !labelLower.includes('chandelier') && !labelLower.includes('pendant')) {
           // Find if there's a bedside table or other nightstand directly underneath
-          const tableBelow = objects.find(other => {
+          const tableBelow = list.find(other => {
             if (other.id === snappedObj.id) return false;
             const otherCat = (other.category || other.placement_category || '').toLowerCase();
             const otherLabel = (other.label || '').toLowerCase();
@@ -1720,7 +1731,6 @@ export default function Scene({
           } else if (labelLower.includes('mirror')) {
             finalPosY = FLOOR_Y_SCALED + 1.5 * scaleFactor;
           } else {
-            // Curtains, window glass, shelf, light strips
             const tempY = raw_pos[1];
             finalPosY = FLOOR_Y_SCALED + tempY * scaleFactor;
           }
@@ -1730,12 +1740,10 @@ export default function Scene({
           if (labelLower.includes('pendant')) {
             finalPosY = FLOOR_Y_SCALED + roomHeight_scaled - 0.25 * scaleFactor;
           } else {
-            // Chandeliers / ceiling track
             finalPosY = FLOOR_Y_SCALED + roomHeight_scaled - 0.3 * scaleFactor;
           }
           finalBaseY = finalPosY - scaledH / 2;
         } else {
-          // Pillows, blankets, decors: keep relative Y offset from support
           const base_y_json = snappedObj.base_position ? snappedObj.base_position[1] : (raw_pos[1] - h / 2);
           finalPosY = FLOOR_Y_SCALED + raw_pos[1] * scaleFactor;
           finalBaseY = FLOOR_Y_SCALED + base_y_json * scaleFactor;
@@ -1747,14 +1755,12 @@ export default function Scene({
         let validatedX = clampedX;
         let validatedZ = clampedZ;
 
-        // A. Prevent going below floor
         const bottomY = validatedPosY - scaledH / 2;
         if (bottomY < FLOOR_Y_SCALED) {
           validatedPosY += (FLOOR_Y_SCALED - bottomY);
           validatedBaseY = validatedPosY - scaledH / 2;
         }
 
-        // B. Floor-standing furniture must not float
         const isFloorFurniture = isFurniture && !isSuspendedOrSurface;
         if (isFloorFurniture && !labelLower.includes('rug')) {
           if (validatedBaseY > FLOOR_Y_SCALED + 0.001) {
@@ -1763,7 +1769,6 @@ export default function Scene({
           }
         }
 
-        // C. Clamp within room bounds (prevent outside bounds or intersecting walls)
         if (!isWallMounted) {
           const halfW = (w_world * scaleFactor) / 2;
           const halfD = (d_world * scaleFactor) / 2;
@@ -1790,7 +1795,7 @@ export default function Scene({
       });
     }
 
-    return objects.map(obj => {
+    return list.map(obj => {
       // 1. Convert coordinates (flip Y and Z due to point cloud rotation)
       const [rawX, rawY, rawZ] = obj.box_3d?.center || [0, 0, 0];
       const [w, h, d] = obj.box_3d?.size || [1, 1, 1];
@@ -1799,12 +1804,11 @@ export default function Scene({
       let y_scene = -rawY;
       let z_scene = -rawZ;
 
-      // Fallback 2D mapping for estimated objects to avoid wall/ceiling clustering
       const isEstimated = obj.placement_quality === 'estimated';
       if (isEstimated && obj.bbox_2d && pcStats) {
         let maxX2d = 640;
         let maxY2d = 480;
-        objects.forEach(o => {
+        list.forEach(o => {
           if (o.bbox_2d) {
             const [,, xmax, ymax] = o.bbox_2d;
             if (xmax > maxX2d) maxX2d = xmax;
@@ -1826,8 +1830,6 @@ export default function Scene({
         z_scene = minZ + normZ * roomDepth;
       }
 
-      // Clamp to room bounds using pre-calculated bounds
-      const margin = 0.2;
       const clampedX = Math.max(minX + (w * scaleFactor) / 2, Math.min(maxX - (w * scaleFactor) / 2, x_scene * scaleFactor));
       const clampedZ = Math.max(minZ + (d * scaleFactor) / 2, Math.min(maxZ - (d * scaleFactor) / 2, z_scene * scaleFactor));
 
@@ -1835,7 +1837,6 @@ export default function Scene({
       const scaledH = h * scaleFactor;
       const scaledD = d * scaleFactor;
 
-      // Snapping classification based on label
       const labelLower = obj.label?.toLowerCase() || '';
       const isWallObject = ['painting', 'mirror', 'curtain', 'window', 'clock', 'wall art'].includes(labelLower);
       const isWallMountedOrStandingAgainstWall = ['cupboard', 'wardrobe', 'cabinet', 'shelf', 'painting', 'mirror', 'curtain', 'window', 'clock', 'wall art'].includes(labelLower);
@@ -1846,11 +1847,9 @@ export default function Scene({
 
       if (obj.base_position) {
         finalX = obj.base_position[0] * scaleFactor;
-        // Flip Z because ThreeJS Z is -Python Z
         finalZ = -obj.base_position[2] * scaleFactor;
       }
 
-      // Snapping Y position:
       let finalPosY = FLOOR_Y_SCALED + scaledH / 2;
       let finalBaseY = FLOOR_Y_SCALED;
 
@@ -1869,8 +1868,7 @@ export default function Scene({
           finalBaseY = FLOOR_Y_SCALED;
         }
       } else if (labelLower.includes('lamp') && !cat.includes('ceiling') && !labelLower.includes('chandelier') && !labelLower.includes('pendant')) {
-        // Find if there's a bedside table or other nightstand directly underneath (in raw coordinate space)
-        const tableBelow = objects.find(other => {
+        const tableBelow = list.find(other => {
           if (other.id === obj.id) return false;
           const otherCat = (other.category || other.placement_category || '').toLowerCase();
           const otherLabel = (other.label || '').toLowerCase();
@@ -1881,7 +1879,7 @@ export default function Scene({
           const objX = rawX;
           const objZ = rawZ;
           const distSq = (otherX - objX) ** 2 + (otherZ - objZ) ** 2;
-          return distSq < 0.25; // within 0.5m in raw coordinates
+          return distSq < 0.25;
         });
         if (tableBelow) {
           const tableHeight = tableBelow.box_3d?.size ? tableBelow.box_3d.size[1] : 0.64;
@@ -1894,7 +1892,6 @@ export default function Scene({
           finalBaseY = finalPosY - scaledH / 2;
         }
       } else if (cat.includes('wall') || cat.includes('mirror') || cat.includes('painting') || cat.includes('window') || cat.includes('curtain') || labelLower.includes('mirror') || labelLower.includes('painting') || labelLower.includes('window') || labelLower.includes('curtain') || labelLower.includes('tv') || labelLower.includes('screen')) {
-        // Wall objects
         if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('art')) {
           finalPosY = FLOOR_Y_SCALED + roomHeight_scaled * 0.65;
         } else if (labelLower.includes('tv') || labelLower.includes('screen')) {
@@ -1902,22 +1899,18 @@ export default function Scene({
         } else if (labelLower.includes('mirror')) {
           finalPosY = FLOOR_Y_SCALED + 1.5 * scaleFactor;
         } else {
-          // Curtains, window glass, shelf, light strips
           const tempY = obj.position_world ? -obj.position_world[1] : y_scene;
           finalPosY = Math.max(FLOOR_Y_SCALED + 1.2 * scaleFactor, Math.min(FLOOR_Y_SCALED + 1.8 * scaleFactor, tempY * scaleFactor));
         }
         finalBaseY = finalPosY - scaledH / 2;
       } else if (cat.includes('ceiling') || labelLower.includes('chandelier') || labelLower.includes('pendant')) {
-        // Ceiling objects
         if (labelLower.includes('pendant')) {
           finalPosY = FLOOR_Y_SCALED + roomHeight_scaled - 0.25 * scaleFactor;
         } else {
-          // Chandeliers / ceiling track
           finalPosY = FLOOR_Y_SCALED + roomHeight_scaled - 0.3 * scaleFactor;
         }
         finalBaseY = finalPosY - scaledH / 2;
       } else {
-        // Pillows, blankets, decors: keep relative Y offset from support
         const tempY = obj.position_world ? -obj.position_world[1] : y_scene;
         finalPosY = FLOOR_Y_SCALED + tempY * scaleFactor;
         finalBaseY = finalPosY - scaledH / 2;
@@ -1945,7 +1938,6 @@ export default function Scene({
         }
       }
 
-      // Validation & Auto-correct
       let validatedPosY = finalPosY;
       let validatedBaseY = finalBaseY;
       const bottom = validatedPosY - scaledH / 2;
@@ -1970,7 +1962,94 @@ export default function Scene({
         }
       };
     });
-  }, [objects, pcStats, viewSettings.floorHeight, scaleFactor, roomBounds, isHardcodedDemo, demoSceneData]);
+  }, [pcStats, viewSettings.floorHeight, scaleFactor, roomBounds, isHardcodedDemo, demoSceneData]);
+
+  const originalObjects = useMemo(() => {
+    return [
+      ...objects.map(item => ({
+        ...item,
+        position: item.originalPosition ? [...item.originalPosition] : item.position,
+        rotation: item.originalRotation ? [...item.originalRotation] : item.rotation,
+        scale: item.originalScale ? [...item.originalScale] : item.scale,
+        color: item.originalColor || item.color,
+        material: item.originalMaterial || item.material,
+        edited: false
+      })),
+      ...removedObjects.map(item => ({
+        ...item,
+        position: item.originalPosition ? [...item.originalPosition] : item.position,
+        rotation: item.originalRotation ? [...item.originalRotation] : item.rotation,
+        scale: item.originalScale ? [...item.originalScale] : item.scale,
+        color: item.originalColor || item.color,
+        material: item.originalMaterial || item.material,
+        edited: false
+      }))
+    ];
+  }, [objects, removedObjects]);
+
+  const originalAlignedObjects = useMemo(() => {
+    return alignObjectsList(originalObjects);
+  }, [originalObjects, alignObjectsList]);
+
+  const rawAlignedObjects = useMemo(() => {
+    return alignObjectsList(objects);
+  }, [objects, alignObjectsList]);
+
+  const currentAlignedObjects = useMemo(() => {
+    return objects.map(item => {
+      if (item.edited) {
+        const [w, h, d] = item.size || [1, 1, 1];
+        const [scaleX, scaleY, scaleZ] = item.scale || [1, 1, 1];
+        const scaledW = w * scaleX;
+        const scaledH = h * scaleY;
+        const scaledD = d * scaleZ;
+        return {
+          ...item,
+          placement_category: item.category || 'floor',
+          box_3d: {
+            center: item.position,
+            base_position: [item.position[0], item.position[1] - scaledH / 2, item.position[2]],
+            size: [scaledW, scaledH, scaledD],
+            rotationY: item.rotation[1],
+          }
+        };
+      } else {
+        const aligned = rawAlignedObjects.find(a => a.id === item.id);
+        return aligned || item;
+      }
+    });
+  }, [objects, rawAlignedObjects]);
+
+  const activeAlignedObjects = useMemo(() => {
+    return compareOriginal ? originalAlignedObjects : currentAlignedObjects;
+  }, [compareOriginal, originalAlignedObjects, currentAlignedObjects]);
+
+  const displayedItems = useMemo(() => {
+    if (compareOriginal) {
+      return originalAlignedObjects.map(obj => ({
+        ...obj,
+        position: obj.box_3d.center,
+        rotation: [0, obj.box_3d.rotationY, 0],
+        scale: [1, 1, 1],
+        size: obj.box_3d.size,
+      }));
+    } else {
+      const currentDetectedMapped = currentAlignedObjects.map(obj => {
+        if (obj.edited) {
+          return obj;
+        } else {
+          return {
+            ...obj,
+            position: obj.box_3d.center,
+            rotation: [0, obj.box_3d.rotationY, 0],
+            scale: [1, 1, 1],
+            size: obj.box_3d.size,
+          };
+        }
+      });
+      return [...currentDetectedMapped, ...placedItems];
+    }
+  }, [compareOriginal, originalAlignedObjects, currentAlignedObjects, placedItems]);
 
   const handlePointCloudLoad = useCallback((stats) => {
     setPcStats(stats);
@@ -2071,20 +2150,20 @@ export default function Scene({
         {showWalkablePanel && isSceneVisible && (
           <WalkableOverlay
             settings={viewSettings}
-            objects={alignedObjects}
-            placedItems={placedItems}
+            objects={activeAlignedObjects}
+            placedItems={compareOriginal ? [] : placedItems}
             onUpdateAnalytics={onWalkableAnalyticsUpdate}
           />
         )}
 
         {isSceneVisible && (
-          <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={alignedObjects} placedItems={placedItems} />
+          <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={activeAlignedObjects} placedItems={compareOriginal ? [] : placedItems} />
         )}
         
         {isSceneVisible && (
           <MeasurementOverlay 
-            objects={alignedObjects} 
-            placedItems={placedItems} 
+            objects={activeAlignedObjects} 
+            placedItems={compareOriginal ? [] : placedItems} 
             settings={viewSettings} 
             visible={showMeasurements} 
             roomAnalysis={roomAnalysis}
@@ -2095,13 +2174,13 @@ export default function Scene({
         )}
 
         {showAssistantPanel && isSceneVisible && (
-          <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={alignedObjects} placedItems={placedItems} />
+          <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={activeAlignedObjects} placedItems={compareOriginal ? [] : placedItems} />
         )}
 
         {showGraphPanel && isSceneVisible && (
           <GraphOverlay
-            objects={alignedObjects}
-            placedItems={placedItems}
+            objects={activeAlignedObjects}
+            placedItems={compareOriginal ? [] : placedItems}
             settings={viewSettings}
             hoverSource={activeGraphSource}
             hoverTarget={activeGraphTarget}
@@ -2115,23 +2194,11 @@ export default function Scene({
           <CVOverlay settings={viewSettings} pipelineStage={cvStage} currentFrame={cvFrame} />
         )}
 
-        {isSceneVisible && alignedObjects.map(obj => (
-          <DetectedBoundingBox
-            key={obj.id}
-            object={obj}
-            selected={selectedId === obj.id}
-            onClick={onSelect}
-            viewSettings={viewSettings}
-            shadowTexture={shadowTexture}
-            roomBounds={roomBounds}
-          />
-        ))}
-
-        {isSceneVisible && placedItems.map(item => (
+        {isSceneVisible && displayedItems.map(item => (
           <PlacedFurniture
             key={item.id}
             item={item}
-            selected={selectedId === item.id}
+            selected={compareOriginal ? false : (selectedId === item.id)}
             onSelect={onSelect}
             onUpdate={onUpdatePlacedItem}
             transformMode={transformMode}
@@ -2139,6 +2206,7 @@ export default function Scene({
             viewSettings={viewSettings}
             demoSceneData={demoSceneData}
             onDraggingChange={setIsDragging}
+            compareOriginal={compareOriginal}
           />
         ))}
 

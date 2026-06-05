@@ -16,6 +16,7 @@ const MATERIAL_PRESETS = [
   { id: 'matte', label: 'Matte Fabric/Plaster' },
   { id: 'glossy', label: 'Glossy Polish' },
   { id: 'fabric', label: 'Woven Fabric' },
+  { id: 'velvet', label: 'Velvet Fabric' },
   { id: 'leather', label: 'Premium Leather' },
   { id: 'wood', label: 'Natural Wood' },
   { id: 'metal', label: 'Polished Metal' },
@@ -32,7 +33,12 @@ export default function ObjectProperties({
   onDuplicate, 
   transformMode, 
   onTransformModeChange, 
-  floorHeight 
+  floorHeight,
+  isHardcodedDemo,
+  compareOriginal,
+  onOpenReplaceLibrary,
+  onSnapToWall,
+  onResetObject
 }) {
   const [uniformScale, setUniformScale] = useState(false);
   const [activeColorPart, setActiveColorPart] = useState('primary'); // 'primary' | 'secondary' | 'accent'
@@ -50,7 +56,7 @@ export default function ObjectProperties({
 
   if (!object) return null;
 
-  const isPlaced = !!object.type; // user-placed furniture vs detected object
+  const isPlaced = true; // both detected and manual items are editable
 
   // Check if current item is a favorite
   const isFavorite = favorites.includes(object.id || '');
@@ -227,39 +233,36 @@ export default function ObjectProperties({
 
         {/* Quick actions */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-          {isPlaced && (
-            <button
-              onClick={() => onDuplicate(object)}
-              style={{ padding: '8px', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', borderRadius: 8, color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500 }}
-            >
-              <Copy size={13} /> Duplicate
-            </button>
-          )}
+          <button
+            onClick={() => onDuplicate(object)}
+            style={{ padding: '8px', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', borderRadius: 8, color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500 }}
+          >
+            <Copy size={13} /> Duplicate
+          </button>
           <button
             onClick={() => onDelete(object.id)}
-            style={{ padding: '8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)', borderRadius: 8, color: 'var(--danger)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500, gridColumn: isPlaced ? 'auto' : '1/-1' }}
+            style={{ padding: '8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.18)', borderRadius: 8, color: 'var(--danger)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500 }}
           >
             <Trash2 size={13} /> Delete
           </button>
         </div>
 
-        {/* Favorite & Reset actions */}
-        {isPlaced && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <button
-              onClick={toggleFavorite}
-              style={{ padding: '8px', background: isFavorite ? 'rgba(251,191,36,0.1)' : 'rgba(255,255,255,0.03)', border: `1px solid ${isFavorite ? '#fbbf24' : 'var(--border)'}`, borderRadius: 8, color: isFavorite ? '#fbbf24' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer', fontSize: '0.8rem' }}
-            >
-              <Star size={13} fill={isFavorite ? '#fbbf24' : 'none'} /> Favorite
-            </button>
-            <button
-              onClick={handleResetColors}
-              style={{ padding: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: 8, color: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer', fontSize: '0.8rem' }}
-            >
-              <RefreshCw size={13} /> Reset Colors
-            </button>
-          </div>
-        )}
+        {/* Favorite & Reset Object */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <button
+            onClick={toggleFavorite}
+            style={{ padding: '8px', background: isFavorite ? 'rgba(251,191,36,0.1)' : 'rgba(255,255,255,0.03)', border: `1px solid ${isFavorite ? '#fbbf24' : 'var(--border)'}`, borderRadius: 8, color: isFavorite ? '#fbbf24' : 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer', fontSize: '0.8rem' }}
+          >
+            <Star size={13} fill={isFavorite ? '#fbbf24' : 'none'} /> Favorite
+          </button>
+          <button
+            onClick={() => onResetObject(object.id)}
+            style={{ padding: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: 8, color: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer', fontSize: '0.8rem' }}
+            title="Reset position, scale, rotation, color, and material to original detected/spawned state"
+          >
+            <RefreshCw size={13} /> Reset Object
+          </button>
+        </div>
 
         {/* Transform Mode */}
         {isPlaced && (
@@ -284,15 +287,29 @@ export default function ObjectProperties({
           </div>
         )}
 
-        {/* Snap to Floor */}
-        {isPlaced && (
+        {/* Snap to Floor & Wall */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
           <button
             onClick={handleSnapToFloor}
-            style={{ padding: '8px 12px', background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.2)', borderRadius: 8, color: '#06b6d4', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, cursor: 'pointer', fontSize: '0.8rem', width: '100%', fontWeight: 500 }}
+            style={{ padding: '8px 6px', background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.2)', borderRadius: 8, color: '#06b6d4', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500 }}
           >
-            <ArrowDown size={14} /> Snap to Floor Plane
+            <ArrowDown size={14} /> Snap Floor
           </button>
-        )}
+          <button
+            onClick={() => onSnapToWall(object.id)}
+            style={{ padding: '8px 6px', background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.2)', borderRadius: 8, color: '#a855f7', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500 }}
+          >
+            <Copy size={14} style={{ transform: 'rotate(90deg)' }} /> Snap Wall
+          </button>
+        </div>
+
+        {/* Replace Object */}
+        <button
+          onClick={() => onOpenReplaceLibrary(object.id)}
+          style={{ padding: '8px 12px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: 8, color: '#fbbf24', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, cursor: 'pointer', fontSize: '0.8rem', width: '100%', fontWeight: 500 }}
+        >
+          <RefreshCw size={14} /> Replace From Library
+        </button>
 
         {/* Color Customization Section */}
         {isPlaced && (

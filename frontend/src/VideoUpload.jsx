@@ -106,7 +106,7 @@ export default function VideoUpload({ onUpload, onClose }) {
               <p style={{ fontSize: '0.75rem' }}>AI will reconstruct your 3D room</p>
             </div>
           </div>
-          <button onClick={onClose} className="action-btn"><X size={20} /></button>
+          <button type="button" onClick={onClose} className="action-btn"><X size={20} /></button>
         </div>
 
         {/* Step indicator */}
@@ -132,7 +132,7 @@ export default function VideoUpload({ onUpload, onClose }) {
               <Film size={44} color={dragActive ? 'var(--teal)' : 'var(--text-muted)'} style={{ margin: '0 auto 14px' }} />
               <h3 style={{ marginBottom: 6, fontSize: '1rem' }}>Drag & drop your room video</h3>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem', marginBottom: 14 }}>MP4, MOV, AVI, WEBM — any indoor space</p>
-              <button className="btn-teal" style={{ margin: '0 auto', fontSize: '0.9rem', padding: '9px 22px' }} onClick={e => { e.stopPropagation(); fileInputRef.current.click(); }}>
+              <button type="button" className="btn-teal" style={{ margin: '0 auto', fontSize: '0.9rem', padding: '9px 22px' }} onClick={e => { e.stopPropagation(); fileInputRef.current.click(); }}>
                 <Upload size={15} /> Select File
               </button>
               <input ref={fileInputRef} type="file" style={{ display: 'none' }} accept="video/mp4,video/quicktime,video/x-msvideo,video/webm" onChange={handleChange} />
@@ -148,7 +148,7 @@ export default function VideoUpload({ onUpload, onClose }) {
                   <div style={{ fontWeight: 600, fontSize: '0.88rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.name}</div>
                   <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{(file.size / (1024 * 1024)).toFixed(1)} MB</div>
                 </div>
-                <button onClick={() => { setFile(null); setPreview(null); }} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={17} /></button>
+                <button type="button" onClick={() => { setFile(null); setPreview(null); }} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={17} /></button>
               </div>
             </div>
           )}
@@ -188,6 +188,7 @@ export default function VideoUpload({ onUpload, onClose }) {
           {/* Process button */}
           {file && (
             <motion.button
+              type="button"
               className="btn-teal"
               style={{ width: '100%', justifyContent: 'center', fontSize: '1rem', padding: '13px' }}
               onClick={() => onUpload(file, mode)}
