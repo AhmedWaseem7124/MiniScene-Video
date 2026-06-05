@@ -17,7 +17,7 @@ const PARTICLES = Array.from({ length: 18 }, (_, i) => ({
   duration: Math.random() * 3 + 3,
 }));
 
-export default function LandingHero({ onUpload }) {
+export default function LandingHero({ onUpload, onCreateScratch }) {
   return (
     <div className="hero-overlay">
       {/* Ambient particles */}
@@ -38,6 +38,7 @@ export default function LandingHero({ onUpload }) {
 
       <motion.div
         className="hero-card"
+        style={{ maxWidth: '680px', width: '92%' }}
         initial={{ opacity: 0, y: 30, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.55, ease: 'easeOut' }}
@@ -51,13 +52,12 @@ export default function LandingHero({ onUpload }) {
 
         {/* Title */}
         <h1 className="hero-title">MiniScene AI</h1>
-        <p className="hero-sub">
-          Upload a room video. AI reconstructs the 3D space.<br />
-          Then design your interior — place, move, and style furniture.
+        <p className="hero-sub" style={{ marginBottom: 24 }}>
+          Upload a room video for AI reconstruction, or design an empty room manually from scratch.
         </p>
 
         {/* Flow diagram */}
-        <div className="hero-flow">
+        <div className="hero-flow" style={{ marginBottom: 28 }}>
           {STEPS.map((step, i) => (
             <div key={step.label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <motion.div
@@ -76,27 +76,83 @@ export default function LandingHero({ onUpload }) {
           ))}
         </div>
 
-        {/* CTA */}
-        <motion.button
-          className="btn-teal"
-          style={{ margin: '0 auto', fontSize: '1.05rem', padding: '14px 32px' }}
-          onClick={onUpload}
-          whileHover={{ scale: 1.06 }}
-          whileTap={{ scale: 0.97 }}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.55 }}
-        >
-          <Film size={20} />
-          Upload Room Video to Begin
-        </motion.button>
+        {/* Choices Grid */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+          gap: '20px',
+          marginBottom: '24px'
+        }}>
+          {/* Card 1 */}
+          <motion.div
+            style={{
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid var(--border)',
+              borderRadius: '16px',
+              padding: '24px 20px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '16px',
+              transition: 'border-color 0.2s',
+            }}
+            whileHover={{ scale: 1.03, borderColor: 'var(--teal)' }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'rgba(6, 182, 212, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Film size={22} color="var(--teal)" />
+              </div>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, fontFamily: "'Outfit', sans-serif", color: '#f8fafc' }}>Upload Room Video</h3>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>Reconstruct a room from video using computer vision</p>
+            </div>
+            <button
+              className="btn-teal"
+              style={{ fontSize: '0.85rem', padding: '10px 20px', width: '100%', justifyContent: 'center', borderRadius: '20px' }}
+              onClick={onUpload}
+            >
+              Upload Video
+            </button>
+          </motion.div>
+
+          {/* Card 2 */}
+          <motion.div
+            style={{
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid var(--border)',
+              borderRadius: '16px',
+              padding: '24px 20px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '16px',
+              transition: 'border-color 0.2s',
+            }}
+            whileHover={{ scale: 1.03, borderColor: 'var(--accent)' }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'rgba(99, 102, 241, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Sofa size={22} color="var(--accent)" />
+              </div>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, fontFamily: "'Outfit', sans-serif", color: '#f8fafc' }}>Start From Empty Room</h3>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>Design your own room manually from scratch</p>
+            </div>
+            <button
+              className="btn-primary"
+              style={{ fontSize: '0.85rem', padding: '10px 20px', width: '100%', justifyContent: 'center', borderRadius: '20px' }}
+              onClick={onCreateScratch}
+            >
+              Create Empty Room
+            </button>
+          </motion.div>
+        </div>
 
         {/* CV Pipeline note */}
-        <div style={{ marginTop: 28, borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 20 }}>
-          <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.7 }}>
-            <strong style={{ color: 'rgba(255,255,255,0.5)' }}>How it works:</strong>{' '}
-            Frames are extracted from your video → per-frame depth is estimated using monocular depth heuristics
-            → a 3D point cloud is built → floor & wall geometry is derived → your room appears in the scene.
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 16 }}>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
+            <strong style={{ color: 'rgba(255,255,255,0.5)' }}>CV Pipeline Heuristic:</strong>{' '}
+            Monocular depth maps extract room corners and construct walls/floors, while the hardcoded empty room initializes design bounds directly inside WebGL without point clouds.
           </p>
         </div>
       </motion.div>

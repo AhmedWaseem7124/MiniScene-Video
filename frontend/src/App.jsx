@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Trash2, Plus, Camera, Save, Download, X, Settings2, Film,
   Footprints, Layers, MoreHorizontal, Activity, Ruler, Sparkles,
-  Network, Map, Copy, CheckCircle2
+  Network, Map, Copy, CheckCircle2, Sliders
 } from 'lucide-react';
 import Scene from './Scene';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -21,6 +21,8 @@ import VideoUpload from './VideoUpload';
 import ProcessingStatus from './ProcessingStatus';
 import LandingHero from './LandingHero';
 import SceneReadyBanner from './SceneReadyBanner';
+import CreateScratchModal from './CreateScratchModal';
+import RoomSettingsPanel from './RoomSettingsPanel';
 
 const FURNITURE_HEIGHTS = {
   Sofa: 0.9,
@@ -193,7 +195,7 @@ function App() {
     console.log("processState:", processState);
   }, [processState]);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const isProcessing = ['UPLOADING', 'PROCESSING', 'LOADING_SCENE'].includes(processState);
+  const isProcessing = ['UPLOADING', 'PROCESSING', 'LOADING_SCENE', 'PROCESSING_DEMO'].includes(processState);
   const [processingStage, setProcessingStage] = useState('upload');
   const [sessionId, setSessionId] = useState(null);
   const [sessionStats, setSessionStats] = useState(null);
@@ -206,6 +208,30 @@ function App() {
   const [fitTrigger, setFitTrigger] = useState(0);
   const [isHardcodedDemo, setIsHardcodedDemo] = useState(false);
   const [demoSceneData, setDemoSceneData] = useState(null);
+  const [pendingDemoScene, setPendingDemoScene] = useState(null);
+  const demoTimerRef = useRef(null);
+
+  const processStateRef = useRef(processState);
+  useEffect(() => {
+    processStateRef.current = processState;
+  }, [processState]);
+
+  const pendingDemoSceneRef = useRef(pendingDemoScene);
+  useEffect(() => {
+    pendingDemoSceneRef.current = pendingDemoScene;
+  }, [pendingDemoScene]);
+
+  useEffect(() => {
+    return () => {
+      if (demoTimerRef.current) {
+        clearInterval(demoTimerRef.current);
+      }
+    };
+  }, []);
+
+  const [sceneType, setSceneType] = useState('reconstructed'); // 'reconstructed' | 'demo' | 'scratch'
+  const [showCreateScratchModal, setShowCreateScratchModal] = useState(false);
+  const [showRoomSettings, setShowRoomSettings] = useState(false);
 
   const [viewSettings, setViewSettings] = useState({
     viewMode: 'hybrid',
@@ -223,12 +249,65 @@ function App() {
     showObjectDebug: false,
     showObjectDirections: false,
     showLabels: false,
+    showCameraDebug: false,
   });
 
   // Clear old cache on load
   useEffect(() => {
     ['editedScene','removedObjects','repairPoints','generatedPoints','pointCloudEdits','sceneRepair'].forEach(k => localStorage.removeItem(k));
   }, []);
+
+  const loadDemoScene = useCallback((data) => {
+    if (!data) return;
+    console.log("Loading demo scene data", data);
+    setSessionId(data.session_id);
+    setIsHardcodedDemo(true);
+    setSceneType('demo');
+    setPointCloudUrl(data.files.point_cloud);
+    setObjectsUrl(data.files.objects);
+    setSemanticUrl(data.files.semantic_scene);
+    setAnalysisUrl(data.files.room_analysis);
+    setGraphUrl(data.files.scene_graph);
+    setPlacedItems([]);
+    setRemovedObjects([]);
+    setSessionStats({
+      frameCount: data.debug?.frame_count_used_target || 0,
+      processingTime: data.debug?.processing_time_seconds || 0,
+      detectedObjectCount: data.detected_object_count ?? 0,
+      mode: 'reconstruct',
+    });
+    setProcessingStage('done');
+    setProcessState('READY');
+    setSceneLoaded(true);
+    setPendingDemoScene(null);
+  }, []);
+
+  // Handle Ctrl + Shift + D keyboard shortcut to toggle showCameraDebug, and Ctrl + Shift + S to skip demo processing
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault();
+        setViewSettings(prev => ({ ...prev, showCameraDebug: !prev.showCameraDebug }));
+        console.log("Toggled camera debug via shortcut Ctrl+Shift+D");
+      }
+      if (e.ctrlKey && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+        const isDev = !(typeof process !== 'undefined' && process.env?.NODE_ENV === 'production' || import.meta.env?.PROD || import.meta.env?.MODE === 'production');
+        if (isDev && processStateRef.current === 'PROCESSING_DEMO') {
+          e.preventDefault();
+          console.log("Skipping demo processing via Ctrl+Shift+S");
+          if (demoTimerRef.current) {
+            clearInterval(demoTimerRef.current);
+            demoTimerRef.current = null;
+          }
+          if (pendingDemoSceneRef.current) {
+            loadDemoScene(pendingDemoSceneRef.current);
+          }
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [loadDemoScene]);
 
   // Load detected objects whenever objectsUrl changes
   useEffect(() => {
@@ -413,12 +492,49 @@ function App() {
       const FLOOR_Y = isHardcodedDemo ? 0 : (viewSettings.floorHeight || -2);
       
       let y = FLOOR_Y;
-      if (type === 'Rug') {
-        y = FLOOR_Y + 0.01;
-      } else if (!['Mirror', 'Painting', 'PendantLight'].includes(type)) {
-        y = FLOOR_Y + height / 2;
+      let finalX = point.x;
+      let finalZ = point.z;
+      let finalRot = [0, 0, 0];
+      
+      if (sceneType === 'scratch' && demoSceneData?.room?.dimensions) {
+        const roomW = demoSceneData.room.dimensions.width;
+        const roomL = demoSceneData.room.dimensions.length;
+        const roomH = demoSceneData.room.dimensions.height;
+        
+        if (placementItem.placementType === 'ceiling' || type === 'PendantLight') {
+          y = roomH - height / 2;
+        } else if (placementItem.placementType === 'rug' || type === 'Rug') {
+          y = 0.01;
+        } else if (placementItem.placementType === 'wall' || type === 'Mirror' || type === 'Painting') {
+          // Snap wall object to nearest wall surface (left, right, or back)
+          const distLeft = Math.abs(point.x - (-roomW / 2));
+          const distRight = Math.abs(point.x - (roomW / 2));
+          const distBack = Math.abs(point.z - (-roomL / 2));
+          const minDist = Math.min(distLeft, distRight, distBack);
+          
+          if (minDist === distLeft) {
+            finalX = -roomW / 2 + size[0] / 2;
+            finalRot = [0, Math.PI / 2, 0];
+          } else if (minDist === distRight) {
+            finalX = roomW / 2 - size[0] / 2;
+            finalRot = [0, -Math.PI / 2, 0];
+          } else {
+            finalZ = -roomL / 2 + size[2] / 2;
+            finalRot = [0, 0, 0];
+          }
+          y = Math.max(height / 2, Math.min(roomH - height / 2, point.y !== undefined ? point.y : roomH * 0.65));
+        } else {
+          // Floor furniture
+          y = height / 2;
+        }
       } else {
-        y = point.y !== undefined ? point.y : (FLOOR_Y + 1.5);
+        if (type === 'Rug') {
+          y = FLOOR_Y + 0.01;
+        } else if (!['Mirror', 'Painting', 'PendantLight'].includes(type)) {
+          y = FLOOR_Y + height / 2;
+        } else {
+          y = point.y !== undefined ? point.y : (FLOOR_Y + 1.5);
+        }
       }
 
       const defaultColor = placementItem.defaultColor || '#d6cabc';
@@ -427,8 +543,8 @@ function App() {
         id: Math.random().toString(),
         name: placementItem.name,
         type: placementItem.type,
-        position: [point.x, y, point.z],
-        rotation: [0, 0, 0],
+        position: [finalX, y, finalZ],
+        rotation: finalRot,
         scale: scale,
         size: size,
         primaryColor: defaultColor,
@@ -514,6 +630,12 @@ function App() {
     setShowVideoUpload(false);
     
     // Clear any old scene state
+    if (demoTimerRef.current) {
+      clearInterval(demoTimerRef.current);
+      demoTimerRef.current = null;
+    }
+    setPendingDemoScene(null);
+
     setObjects([]);
     setPlacedItems([]);
     setSelectedId(null);
@@ -535,6 +657,9 @@ function App() {
     setShowMeasurementPanel(false);
     setIsHardcodedDemo(false);
     setDemoSceneData(null);
+    setSceneType('reconstructed');
+    setShowRoomSettings(false);
+    setShowCreateScratchModal(false);
 
     const timestamp = Date.now();
     const reqId = `req_${timestamp}`;
@@ -586,29 +711,63 @@ function App() {
       console.log(`BACKEND RESPONSE RECEIVED - Round-trip time: ${elapsedRoundTrip}s`);
 
       if (data.success) {
-        console.log("Backend success, setting URLs", data.files);
-        setSessionId(data.session_id);
+        console.log("Backend success, checking scene type", data.scene_type);
         const isDemo = data.scene_type === 'hardcoded';
-        setIsHardcodedDemo(isDemo);
-        setPointCloudUrl(data.files.point_cloud);
-        setObjectsUrl(data.files.objects);
-        setSemanticUrl(data.files.semantic_scene);
-        setAnalysisUrl(data.files.room_analysis);
-        setGraphUrl(data.files.scene_graph);
-        setPlacedItems([]);
-        setRemovedObjects([]);
-        setSessionStats({
-          frameCount: data.debug?.frame_count_used_target || 0,
-          processingTime: data.debug?.processing_time_seconds || 0,
-          detectedObjectCount: data.detected_object_count ?? 0,
-          mode: mode,
-        });
-        setProcessingStage('done');
         
         if (isDemo) {
-          setProcessState('READY');
-          setSceneLoaded(true);
+          setSessionId(data.session_id);
+          setIsHardcodedDemo(false);
+          setPendingDemoScene(data);
+          setProcessState('PROCESSING_DEMO');
+          setElapsedSeconds(0);
+          setProcessingStage('upload');
+
+          if (demoTimerRef.current) {
+            clearInterval(demoTimerRef.current);
+          }
+
+          const startDemoTime = Date.now();
+          demoTimerRef.current = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - startDemoTime) / 1000);
+            setElapsedSeconds(elapsed);
+
+            let currentStage = 'upload';
+            if (elapsed < 2) currentStage = 'upload';
+            else if (elapsed < 4) currentStage = 'extract';
+            else if (elapsed < 6) currentStage = 'features';
+            else if (elapsed < 8) currentStage = 'motion';
+            else if (elapsed < 10) currentStage = 'depth';
+            else if (elapsed < 12) currentStage = 'recon';
+            else if (elapsed < 14) currentStage = 'objects';
+            else if (elapsed < 16) currentStage = 'build';
+            else currentStage = 'finalize';
+
+            setProcessingStage(currentStage);
+
+            if (elapsed >= 20) {
+              clearInterval(demoTimerRef.current);
+              demoTimerRef.current = null;
+              loadDemoScene(data);
+            }
+          }, 1000);
         } else {
+          setSessionId(data.session_id);
+          setIsHardcodedDemo(false);
+          setSceneType('reconstructed');
+          setPointCloudUrl(data.files.point_cloud);
+          setObjectsUrl(data.files.objects);
+          setSemanticUrl(data.files.semantic_scene);
+          setAnalysisUrl(data.files.room_analysis);
+          setGraphUrl(data.files.scene_graph);
+          setPlacedItems([]);
+          setRemovedObjects([]);
+          setSessionStats({
+            frameCount: data.debug?.frame_count_used_target || 0,
+            processingTime: data.debug?.processing_time_seconds || 0,
+            detectedObjectCount: data.detected_object_count ?? 0,
+            mode: mode,
+          });
+          setProcessingStage('done');
           setProcessState('LOADING_SCENE');
           // Force READY fallback after backend response to prevent infinite loading screen (Requirement 3)
           setTimeout(() => {
@@ -630,6 +789,203 @@ function App() {
     }
   };
 
+  const handleCreateScratchRoom = (config) => {
+    const { roomType, width, length, height, wallColor, floorColor, floorMaterial, includeCeiling } = config;
+    const sceneJson = {
+      scene_id: "empty_room_custom",
+      scene_type: "scratch",
+      metadata: {
+        scene_name: "Custom Empty Room",
+        units: "meters",
+        source: "manual_empty_room"
+      },
+      room: {
+        dimensions: {
+          width,
+          length,
+          height
+        },
+        floor: {
+          position: [0, 0, 0],
+          size: [width, 0.04, length],
+          color: floorColor,
+          material: floorMaterial
+        },
+        walls: [
+          {
+            id: "back_wall",
+            position: [0, height / 2, -length / 2],
+            size: [width, height, 0.02],
+            color: wallColor
+          },
+          {
+            id: "left_wall",
+            position: [-width / 2, height / 2, 0],
+            size: [0.02, height, length],
+            color: wallColor
+          },
+          {
+            id: "right_wall",
+            position: [width / 2, height / 2, 0],
+            size: [0.02, height, length],
+            color: wallColor
+          }
+        ],
+        ceiling: includeCeiling ? {
+          position: [0, height, 0],
+          size: [width, 0.02, length],
+          color: "#f2eee8"
+        } : null
+      },
+      objects: [],
+      relations: [],
+      camera_start: {
+        position: [0, height + 1.5, length + 3.0],
+        target: [0, 0.5, 0],
+        fov: 58
+      }
+    };
+
+    if (demoTimerRef.current) {
+      clearInterval(demoTimerRef.current);
+      demoTimerRef.current = null;
+    }
+    setPendingDemoScene(null);
+
+    setObjects([]);
+    setPlacedItems([]);
+    setSelectedId(null);
+    setSceneLoaded(true);
+    setPcStats(null);
+    setSessionStats(null);
+    setPointCloudUrl(null);
+    setObjectsUrl(null);
+    setSemanticUrl(null);
+    setAnalysisUrl(null);
+    setGraphUrl(null);
+    setObjectDetectionMetadata(null);
+    setRemovedObjects([]);
+    setRoomAnalysis(null);
+    setScaleFactor(1.0);
+    setCalibrationInfo({ status: 'Estimated', source: 'estimated_from_point_cloud', value: null });
+    setDistancePickerActive(false);
+    setDistancePickerObjects([]);
+    setShowMeasurementPanel(false);
+
+    setIsHardcodedDemo(true);
+    setSceneType("scratch");
+    setDemoSceneData(sceneJson);
+    setShowCreateScratchModal(false);
+    setShowRoomSettings(false);
+    setProcessState("READY");
+  };
+
+  const handleUpdateRoomSettings = (updates) => {
+    setDemoSceneData(prev => {
+      if (!prev) return prev;
+      
+      const newRoom = { ...prev.room };
+      
+      // Update dimensions
+      if (updates.width !== undefined || updates.length !== undefined || updates.height !== undefined) {
+        newRoom.dimensions = {
+          ...newRoom.dimensions,
+          width: updates.width !== undefined ? updates.width : newRoom.dimensions.width,
+          length: updates.length !== undefined ? updates.length : newRoom.dimensions.length,
+          height: updates.height !== undefined ? updates.height : newRoom.dimensions.height,
+        };
+      }
+      
+      const { width, length, height } = newRoom.dimensions;
+      
+      // Update floor
+      newRoom.floor = {
+        ...newRoom.floor,
+        size: [width, 0.04, length],
+        color: updates.floorColor !== undefined ? updates.floorColor : newRoom.floor.color,
+        material: updates.floorMaterial !== undefined ? updates.floorMaterial : newRoom.floor.material,
+      };
+      
+      // Update walls
+      const wallColor = updates.wallColor !== undefined ? updates.wallColor : (newRoom.walls?.[0]?.color || '#d8d3ca');
+      newRoom.walls = [
+        {
+          id: "back_wall",
+          position: [0, height / 2, -length / 2],
+          size: [width, height, 0.02],
+          color: wallColor
+        },
+        {
+          id: "left_wall",
+          position: [-width / 2, height / 2, 0],
+          size: [0.02, height, length],
+          color: wallColor
+        },
+        {
+          id: "right_wall",
+          position: [width / 2, height / 2, 0],
+          size: [0.02, height, length],
+          color: wallColor
+        }
+      ];
+      
+      // Update ceiling if present
+      if (newRoom.ceiling) {
+        newRoom.ceiling = {
+          ...newRoom.ceiling,
+          position: [0, height, 0],
+          size: [width, 0.02, length],
+        };
+      }
+      
+      // Clamp furniture inside new boundaries
+      setPlacedItems(items => items.map(item => {
+        const [w, h, d] = item.size || [1.0, 1.0, 1.0];
+        let [x, y, z] = item.position;
+        
+        // Clamp X
+        const maxX = width / 2 - w / 2;
+        const minX = -width / 2 + w / 2;
+        if (maxX > minX) {
+          x = Math.max(minX, Math.min(maxX, x));
+        } else {
+          x = 0;
+        }
+        
+        // Clamp Z
+        const maxZ = length / 2 - d / 2;
+        const minZ = -length / 2 + d / 2;
+        if (maxZ > minZ) {
+          z = Math.max(minZ, Math.min(maxZ, z));
+        } else {
+          z = 0;
+        }
+        
+        // Ground Y position
+        let targetY = y;
+        if (item.placementType === 'ceiling' || item.type === 'PendantLight') {
+          targetY = height - h / 2;
+        } else if (item.placementType === 'rug' || item.type === 'Rug') {
+          targetY = 0.01;
+        } else if (item.placementType === 'wall' || item.type === 'Mirror' || item.type === 'Painting') {
+          targetY = Math.max(h / 2, Math.min(height - h / 2, y));
+        } else {
+          targetY = h / 2;
+        }
+        
+        return {
+          ...item,
+          position: [x, targetY, z]
+        };
+      }));
+      
+      return {
+        ...prev,
+        room: newRoom
+      };
+    });
+  };
+
   const handleSave = () => {
     const saveData = { placedItems, timestamp: Date.now(), sessionId };
     localStorage.setItem('miniscene_layout', JSON.stringify(saveData));
@@ -638,11 +994,45 @@ function App() {
   };
 
   const handleExport = () => {
-    const exportData = { version: 1, session_id: sessionId, placed_furniture: placedItems, timestamp: new Date().toISOString() };
+    let filename = 'miniscene_layout.json';
+    let exportData = {};
+    
+    if (sceneType === 'scratch') {
+      filename = 'custom_empty_room_scene.json';
+      exportData = {
+        scene_id: "empty_room_custom",
+        scene_type: "scratch",
+        metadata: {
+          scene_name: "Custom Empty Room",
+          units: "meters",
+          source: "manual_empty_room",
+          timestamp: new Date().toISOString()
+        },
+        room: demoSceneData?.room,
+        placed_furniture: placedItems.map(item => ({
+          id: item.id,
+          name: item.name,
+          type: item.type,
+          position: item.position,
+          rotation: item.rotation,
+          scale: item.scale,
+          size: item.size,
+          color: item.color,
+          primaryColor: item.primaryColor,
+          secondaryColor: item.secondaryColor,
+          accentColor: item.accentColor,
+          material: item.material,
+          placementType: item.placementType
+        }))
+      };
+    } else {
+      exportData = { version: 1, session_id: sessionId, placed_furniture: placedItems, timestamp: new Date().toISOString() };
+    }
+    
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = 'miniscene_layout.json'; a.click();
+    a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -656,7 +1046,8 @@ function App() {
         currentStage={processingStage} 
         elapsedSeconds={elapsedSeconds}
         sessionId={sessionId}
-        onSkip={() => {
+        isDemo={processState === 'PROCESSING_DEMO'}
+        onSkip={processState === 'PROCESSING_DEMO' ? null : () => {
           console.warn("User skipped loading screen");
           setProcessState('READY');
           setSceneLoaded(true);
@@ -831,7 +1222,10 @@ function App() {
       }}>
         {/* Landing hero — shown when no scene */}
         {!hasScene && !isProcessing && (
-          <LandingHero onUpload={() => setShowVideoUpload(true)} />
+          <LandingHero
+            onUpload={() => setShowVideoUpload(true)}
+            onCreateScratch={() => setShowCreateScratchModal(true)}
+          />
         )}
 
         {/* Scene Ready Banner */}
@@ -893,6 +1287,12 @@ function App() {
               distancePickerObjects={distancePickerObjects}
               isHardcodedDemo={isHardcodedDemo}
               demoSceneData={demoSceneData}
+              showCameraDebug={
+                viewSettings.showCameraDebug &&
+                !showLibrary &&
+                !showVideoUpload &&
+                !(typeof process !== 'undefined' && process.env?.NODE_ENV === 'production' || import.meta.env?.PROD || import.meta.env?.MODE === 'production')
+              }
             />
           </CanvasErrorBoundary>
         )}
@@ -918,6 +1318,39 @@ function App() {
           >
             <Plus size={17} /> Add Furniture
           </button>
+
+          {hasScene && (
+            <>
+              <div className="toolbar-divider" />
+              {/* Room Settings */}
+              <button
+                className="btn-primary"
+                style={{ background: showRoomSettings ? 'rgba(255,255,255,0.12)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+                onClick={() => setShowRoomSettings(s => !s)}
+                title="Room settings and dimensions"
+              >
+                <Sliders size={17} /> Room Settings
+              </button>
+
+              <div className="toolbar-divider" />
+              {/* Save */}
+              <button
+                className="btn-primary"
+                style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+                onClick={handleSave}
+              >
+                <Save size={17} /> Save
+              </button>
+              {/* Export */}
+              <button
+                className="btn-primary"
+                style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+                onClick={handleExport}
+              >
+                <Download size={17} /> Export
+              </button>
+            </>
+          )}
 
           <div className="toolbar-divider" />
 
@@ -1005,6 +1438,19 @@ function App() {
       <AnimatePresence>
         {showVideoUpload && <VideoUpload onUpload={handleUploadVideo} onClose={() => setShowVideoUpload(false)} />}
         {showLibrary && <FurnitureLibrary onClose={() => setShowLibrary(false)} onSelect={handleLibrarySelect} />}
+        {showCreateScratchModal && (
+          <CreateScratchModal
+            onCreate={handleCreateScratchRoom}
+            onClose={() => setShowCreateScratchModal(false)}
+          />
+        )}
+        {showRoomSettings && (
+          <RoomSettingsPanel
+            room={demoSceneData?.room}
+            onUpdate={handleUpdateRoomSettings}
+            onClose={() => setShowRoomSettings(false)}
+          />
+        )}
 
         {showViewSettings && (
           <ViewSettings
@@ -1015,7 +1461,7 @@ function App() {
             onClose={() => setShowViewSettings(false)}
             onAutoFit={() => setViewSettings(s => ({ ...s, roomScale: 1, floorHeight: -2 }))}
             onReset={() => {
-              setViewSettings({ viewMode: 'hybrid', pointSize: 0.015, pointOpacity: 0.85, wallOpacity: 0.5, floorHeight: -2, roomScale: 1, showGrid: false, showWalls: true, showCeiling: false, showOriginalPointCloud: true, showRepairPoints: false, showEditedPointCloud: false, showObjectDebug: false, showObjectDirections: false, showLabels: false });
+              setViewSettings({ viewMode: 'hybrid', pointSize: 0.015, pointOpacity: 0.85, wallOpacity: 0.5, floorHeight: -2, roomScale: 1, showGrid: false, showWalls: true, showCeiling: false, showOriginalPointCloud: true, showRepairPoints: false, showEditedPointCloud: false, showObjectDebug: false, showObjectDirections: false, showLabels: false, showCameraDebug: false });
               setRepairMode(false);
             }}
             onResetCache={() => { setRemovedObjects([]); }}

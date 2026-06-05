@@ -618,6 +618,32 @@ def serve_outputs(filepath):
     return send_from_directory(OUTPUT_BASE_DIR, filepath)
 
 
+@app.route('/api/save-thumbnail', methods=['POST'])
+def save_thumbnail():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "error": "No JSON payload"}), 400
+        filename = data.get('filename')
+        image_data = data.get('image')
+        if not filename or not image_data:
+            return jsonify({"success": False, "error": "Missing filename or image"}), 400
+        import base64
+        if ',' in image_data:
+            image_data = image_data.split(',')[1]
+        decoded = base64.b64decode(image_data)
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'frontend', 'public', 'thumbnails'))
+        filepath = os.path.abspath(os.path.join(base_dir, filename))
+        if not filepath.startswith(base_dir):
+            return jsonify({"success": False, "error": "Invalid path"}), 400
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'wb') as f:
+            f.write(decoded)
+        return jsonify({"success": True, "path": f"/thumbnails/{filename}"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/")
 def home():
     return jsonify({"status": "MiniScene backend running"})

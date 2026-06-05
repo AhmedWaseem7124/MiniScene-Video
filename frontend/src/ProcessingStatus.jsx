@@ -10,11 +10,25 @@ const STAGES = [
   { id: 'done',    icon: '✅', label: 'Scene ready!',              desc: 'Your 3D room is built' },
 ];
 
-export default function ProcessingStatus({ isProcessing, currentStage = 'recon', elapsedSeconds = 0, sessionId, onSkip }) {
+const DEMO_STAGES = [
+  { id: 'upload',   icon: '📤', label: 'Uploading video',           desc: 'Uploading raw footage to cloud node...' },
+  { id: 'extract',  icon: '🎬', label: 'Extracting frames',         desc: 'Analyzing video frames...' },
+  { id: 'features', icon: '🔍', label: 'Detecting room features',    desc: 'Detecting room features...' },
+  { id: 'motion',   icon: '📹', label: 'Estimating camera motion',  desc: 'Estimating camera trajectory...' },
+  { id: 'depth',    icon: '📐', label: 'Estimating depth',          desc: 'Estimating depth map...' },
+  { id: 'recon',    icon: '☁️', label: 'Reconstructing 3D room',     desc: 'Reconstructing room geometry...' },
+  { id: 'objects',  icon: '📦', label: 'Detecting furniture objects',desc: 'Detecting furniture and wall objects...' },
+  { id: 'build',    icon: '🔨', label: 'Building editable scene',   desc: 'Preparing editable interior scene...' },
+  { id: 'finalize', icon: '✨', label: 'Finalizing interior layout',desc: 'Finalizing interior layout...' },
+];
+
+export default function ProcessingStatus({ isProcessing, currentStage = 'recon', elapsedSeconds = 0, sessionId, onSkip, isDemo = false }) {
   if (!isProcessing) return null;
 
-  const activeIndex = Math.max(0, STAGES.findIndex(s => s.id === currentStage));
-  const title = currentStage === 'done' ? 'Loading 3D Scene...' : `Processing video... ${elapsedSeconds}s`;
+  const stagesList = isDemo ? DEMO_STAGES : STAGES;
+  const activeIndex = Math.max(0, stagesList.findIndex(s => s.id === currentStage));
+  const progress = isDemo ? Math.min(100, Math.round((elapsedSeconds / 20) * 100)) : 0;
+  const title = isDemo ? `Processing video... ${progress}%` : (currentStage === 'done' ? 'Loading 3D Scene...' : `Processing video... ${elapsedSeconds}s`);
 
   return (
     <motion.div
@@ -49,9 +63,31 @@ export default function ProcessingStatus({ isProcessing, currentStage = 'recon',
         </p>
       </div>
 
+      {/* Progress Bar (Demo Only) */}
+      {isDemo && (
+        <div style={{ width: '100%', maxWidth: 420, display: 'flex', flexDirection: 'column', gap: 6, marginTop: -10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            <span>Reconstruction Progress</span>
+            <span style={{ color: '#06b6d4', fontWeight: 'bold' }}>{progress}%</span>
+          </div>
+          <div style={{ width: '100%', height: 6, background: 'rgba(255, 255, 255, 0.05)', borderRadius: 3, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.05)' }}>
+            <motion.div
+              style={{
+                height: '100%',
+                background: 'linear-gradient(90deg, #6366f1, #06b6d4)',
+                borderRadius: 3
+              }}
+              initial={{ width: 0 }}
+              animate={{ width: `${progress}%` }}
+              transition={{ duration: 0.3, ease: 'easeOut' }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Stage list */}
       <div style={{ width: '100%', maxWidth: 420, background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {STAGES.map((stage, idx) => {
+        {stagesList.map((stage, idx) => {
           const done = idx < activeIndex;
           const active = idx === activeIndex;
           const pending = idx > activeIndex;

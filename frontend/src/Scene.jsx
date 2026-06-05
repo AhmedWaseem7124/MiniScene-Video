@@ -914,7 +914,7 @@ function getPartType(type, defaultColorHex) {
   return 'primary';
 }
 
-function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, isHardcodedDemo, viewSettings }) {
+function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, isHardcodedDemo, viewSettings, demoSceneData, onDraggingChange }) {
   const outerGroupRef = useRef();
   const innerGroupRef = useRef();
   const [ready, setReady] = useState(false);
@@ -1043,24 +1043,81 @@ function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, is
     if (!g) return;
     
     let y = g.position.y;
+    let x = g.position.x;
+    let z = g.position.z;
     const FLOOR_Y = isHardcodedDemo ? 0 : (viewSettings?.floorHeight || -2);
     const height = g.scale.y;
-    
-    if (item.type === 'Rug') {
-      y = FLOOR_Y + 0.01;
-    } else if (isPlacedFloorFurniture(item.type)) {
-      y = FLOOR_Y + height / 2;
-    }
     
     const originalSize = item.size || [1, 1, 1];
     const nextScale = [g.scale.x / originalSize[0], g.scale.y / originalSize[1], g.scale.z / originalSize[2]];
     
+    if (isHardcodedDemo && demoSceneData?.scene_type === 'scratch' && demoSceneData?.room?.dimensions) {
+      const roomW = demoSceneData.room.dimensions.width;
+      const roomL = demoSceneData.room.dimensions.length;
+      const roomH = demoSceneData.room.dimensions.height;
+      
+      const scaledW = originalSize[0] * nextScale[0];
+      const scaledH = originalSize[1] * nextScale[1];
+      const scaledD = originalSize[2] * nextScale[2];
+      
+      // Clamp boundaries
+      const minX = -roomW / 2 + scaledW / 2;
+      const maxX = roomW / 2 - scaledW / 2;
+      if (maxX > minX) {
+        x = Math.max(minX, Math.min(maxX, x));
+      } else {
+        x = 0;
+      }
+      
+      const minZ = -roomL / 2 + scaledD / 2;
+      const maxZ = roomL / 2 - scaledD / 2;
+      if (maxZ > minZ) {
+        z = Math.max(minZ, Math.min(maxZ, z));
+      } else {
+        z = 0;
+      }
+      
+      // Ground Y position
+      if (item.placementType === 'ceiling' || item.type === 'PendantLight') {
+        y = roomH - scaledH / 2;
+      } else if (item.placementType === 'rug' || item.type === 'Rug') {
+        y = 0.01;
+      } else if (item.placementType === 'wall' || item.type === 'Mirror' || item.type === 'Painting') {
+        y = Math.max(scaledH / 2, Math.min(roomH - scaledH / 2, y));
+        
+        // Nearest wall snapping
+        const distLeft = Math.abs(x - (-roomW / 2));
+        const distRight = Math.abs(x - (roomW / 2));
+        const distBack = Math.abs(z - (-roomL / 2));
+        const minDist = Math.min(distLeft, distRight, distBack);
+        
+        if (minDist === distLeft) {
+          x = -roomW / 2 + scaledW / 2;
+          g.rotation.set(0, Math.PI / 2, 0);
+        } else if (minDist === distRight) {
+          x = roomW / 2 - scaledW / 2;
+          g.rotation.set(0, -Math.PI / 2, 0);
+        } else {
+          z = -roomL / 2 + scaledD / 2;
+          g.rotation.set(0, 0, 0);
+        }
+      } else {
+        y = scaledH / 2;
+      }
+    } else {
+      if (item.type === 'Rug') {
+        y = FLOOR_Y + 0.01;
+      } else if (isPlacedFloorFurniture(item.type)) {
+        y = FLOOR_Y + height / 2;
+      }
+    }
+    
     onUpdate(item.id, {
-      position: [g.position.x, y, g.position.z],
+      position: [x, y, z],
       rotation: [g.rotation.x, g.rotation.y, g.rotation.z],
       scale: nextScale,
     });
-  }, [item.id, item.type, item.size, onUpdate, isHardcodedDemo, viewSettings]);
+  }, [item.id, item.type, item.size, item.placementType, onUpdate, isHardcodedDemo, viewSettings, demoSceneData]);
 
   const innerMesh = (
     <group
@@ -1084,6 +1141,11 @@ function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, is
           object={innerGroupRef.current}
           mode={transformMode || 'translate'}
           onMouseUp={handleChange}
+          onDraggingChange={(e) => {
+            if (onDraggingChange) {
+              onDraggingChange(!!e.value);
+            }
+          }}
         />
       )}
       {innerMesh}
@@ -1320,7 +1382,7 @@ function CameraStabilizer({ placedItems }) {
 }
 
 // ─── Debug Overlay (Requirement 7) ──────────────────────────────────────────
-function DebugOverlay({ placedItems }) {
+function DebugOverlay({ placedItems, selectedId }) {
   const { camera, controls } = useThree();
   const [tick, setTick] = useState(0);
 
@@ -1328,51 +1390,39 @@ function DebugOverlay({ placedItems }) {
     setTick(t => t + 1);
   });
 
-  if (!placedItems || placedItems.length === 0) return null;
-
-  const latest = placedItems[placedItems.length - 1];
   const camPosStr = `[${camera.position.x.toFixed(2)}, ${camera.position.y.toFixed(2)}, ${camera.position.z.toFixed(2)}]`;
   const targetStr = controls 
     ? `[${controls.target.x.toFixed(2)}, ${controls.target.y.toFixed(2)}, ${controls.target.z.toFixed(2)}]`
     : 'N/A';
   
-  const itemPosStr = latest.position 
-    ? `[${latest.position[0].toFixed(2)}, ${latest.position[1].toFixed(2)}, ${latest.position[2].toFixed(2)}]`
-    : 'N/A';
-  const itemSizeStr = latest.size 
-    ? `[${latest.size[0].toFixed(2)}, ${latest.size[1].toFixed(2)}, ${latest.size[2].toFixed(2)}]`
-    : 'N/A';
-  const itemScaleStr = latest.scale 
-    ? `[${latest.scale[0].toFixed(2)}, ${latest.scale[1].toFixed(2)}, ${latest.scale[2].toFixed(2)}]`
+  const selectedItem = placedItems?.find(p => p.id === selectedId);
+  const selectedName = selectedItem ? selectedItem.name : 'None';
+  const selectedPosStr = selectedItem && selectedItem.position 
+    ? `[${selectedItem.position[0].toFixed(2)}, ${selectedItem.position[1].toFixed(2)}, ${selectedItem.position[2].toFixed(2)}]`
     : 'N/A';
 
   return (
-    <Html style={{ position: 'absolute', top: 20, right: 20, pointerEvents: 'none', userSelect: 'none' }}>
+    <Html style={{ position: 'absolute', top: 16, right: 16, pointerEvents: 'none', userSelect: 'none' }}>
       <div style={{
-        background: 'rgba(15, 23, 42, 0.85)',
+        background: 'rgba(15, 23, 42, 0.8)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
         color: '#f8fafc',
-        padding: '12px 16px',
-        borderRadius: '10px',
+        padding: '10px 12px',
+        borderRadius: '8px',
         fontSize: '11px',
         fontFamily: 'monospace',
-        border: '1px solid rgba(255, 255, 255, 0.1)',
-        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
-        width: '280px',
+        border: '1px solid rgba(255, 255, 255, 0.08)',
+        boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
+        width: '220px',
         display: 'flex',
         flexDirection: 'column',
-        gap: '6px',
+        gap: '4px',
       }}>
-        <div style={{ fontWeight: 'bold', color: '#38bdf8', marginBottom: '2px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px' }}>
-          3D VIEWPORT CAMERA DEBUG
-        </div>
-        <div><strong>Camera Position:</strong> {camPosStr}</div>
-        <div><strong>Controls Target:</strong> {targetStr}</div>
-        <div style={{ fontWeight: 'bold', color: '#34d399', marginTop: '4px', borderBottom: '1px solid rgba(255,255,255,0.1)', paddingBottom: '4px' }}>
-          LATEST ADDED OBJECT ({latest.type})
-        </div>
-        <div><strong>Position:</strong> {itemPosStr}</div>
-        <div><strong>Size:</strong> {itemSizeStr}</div>
-        <div><strong>Scale:</strong> {itemScaleStr}</div>
+        <div><strong>Camera:</strong> {camPosStr}</div>
+        <div><strong>Target:</strong> {targetStr}</div>
+        <div><strong>Selected:</strong> {selectedName}</div>
+        <div><strong>Position:</strong> {selectedPosStr}</div>
       </div>
     </Html>
   );
@@ -1483,12 +1533,14 @@ export default function Scene({
   distancePickerObjects,
   isHardcodedDemo,
   demoSceneData,
+  showCameraDebug,
 }) {
   useEffect(() => {
     console.log("Scene mounted", pointCloudUrl);
   }, [pointCloudUrl]);
 
   const [pcStats, setPcStats] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [sceneTransform, setSceneTransform] = useState({ position: [0, 0, 0], scale: [1, 1, 1] });
   const shadowTexture = useMemo(() => createRadialShadowTexture(), []);
 
@@ -1945,7 +1997,9 @@ export default function Scene({
       <AddFurnitureAuditor placedItems={placedItems} selectedId={selectedId} />
       <DebugLogger placedItems={placedItems} />
       <CameraStabilizer placedItems={placedItems} />
-      <DebugOverlay placedItems={placedItems} />
+      {showCameraDebug && !isDragging && (
+        <DebugOverlay placedItems={placedItems} selectedId={selectedId} />
+      )}
       <KeyboardHandler selectedId={selectedId} onDelete={onDeleteSelected} onTransformMode={onTransformModeChange} />
       <AutoFitController stats={pcStats} fitTrigger={fitTrigger} />
       <DemoCameraController isHardcodedDemo={isHardcodedDemo} cameraStart={demoSceneData?.camera_start} />
@@ -2083,6 +2137,8 @@ export default function Scene({
             transformMode={transformMode}
             isHardcodedDemo={isHardcodedDemo}
             viewSettings={viewSettings}
+            demoSceneData={demoSceneData}
+            onDraggingChange={setIsDragging}
           />
         ))}
 

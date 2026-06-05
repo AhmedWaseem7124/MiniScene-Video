@@ -27,6 +27,16 @@ export default function ProxyRoom({
   if (isHardcodedDemo && roomData) {
     const floorSize = roomData.floor?.size || [6.4, 0.04, 7.2];
     const floorPos = roomData.floor?.position || [0, 0, 0];
+    const floorColor = roomData.floor?.color || "#d7d0c4";
+    const floorMat = roomData.floor?.material || "wood";
+    
+    let roughness = 0.7;
+    let metalness = 0.05;
+    if (floorMat === "marble") { roughness = 0.12; metalness = 0.1; }
+    else if (floorMat === "wood") { roughness = 0.6; metalness = 0.05; }
+    else if (floorMat === "tile") { roughness = 0.3; metalness = 0.05; }
+    else if (floorMat === "carpet") { roughness = 0.95; metalness = 0.0; }
+    else if (floorMat === "concrete") { roughness = 0.8; metalness = 0.0; }
 
     return (
       <group>
@@ -39,9 +49,9 @@ export default function ProxyRoom({
         >
           <boxGeometry args={floorSize} />
           <meshStandardMaterial
-            color="#d7d0c4"
-            roughness={0.7}
-            metalness={0.05}
+            color={floorColor}
+            roughness={roughness}
+            metalness={metalness}
             transparent={false}
             opacity={1}
           />
@@ -52,7 +62,7 @@ export default function ProxyRoom({
           <mesh key={wall.id} position={wall.position} receiveShadow>
             <boxGeometry args={wall.size} />
             <meshStandardMaterial
-              color="#b8b4aa"
+              color={wall.color || "#b8b4aa"}
               roughness={0.9}
               transparent={true}
               opacity={0.55}

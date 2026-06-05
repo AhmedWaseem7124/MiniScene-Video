@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Search, Star, Clock, Grid, List, Filter } from 'lucide-react';
+import { X, Search, Star, Clock, Grid, List, Filter, Sparkles, Loader } from 'lucide-react';
+import ThumbnailGenerator from './ThumbnailGenerator';
 
 // Predefined Color Palettes
 const PALETTES = {
@@ -132,6 +133,76 @@ export const CATALOG = [
   { id: 'fan_wall_oscillate', name: 'Oscillating Wall Fan', category: 'Fans', subcategory: 'Wall Fan', placementType: 'wall', size: [0.4, 0.45, 0.35], defaultColor: '#2b2b2b', colorOptions: PALETTES.neutral, material: 'plastic', icon: '🌀', tags: ['fan', 'wall', 'oscillating', 'cooling'], type: 'Light' }
 ];
 
+// Enrich catalog schema programmatically for modelPath, thumbnailPath, and colors
+CATALOG.forEach(item => {
+  const catFolder = item.category.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+  item.modelPath = item.modelPath || `/models/${catFolder}/${item.id}.glb`;
+  item.thumbnailPath = item.thumbnailPath || `/thumbnails/${catFolder}/${item.id}.png`;
+  item.colors = item.colors || item.colorOptions || [];
+});
+
+// ─── Beautiful Falling Image / Preview Fallback component ──────────────────
+function FurniturePreviewImage({ item, buster, className }) {
+  const [error, setError] = useState(false);
+
+  // Category gradient generator to produce rich, beautiful aesthetics
+  const getCategoryGradient = (cat) => {
+    const hashes = cat.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const hue = hashes % 360;
+    return `linear-gradient(135deg, hsl(${hue}, 45%, 28%) 0%, hsl(${(hue + 60) % 360}, 50%, 14%) 100%)`;
+  };
+
+  const [thumbUrl, setThumbUrl] = useState(item.thumbnailPath);
+  
+  useEffect(() => {
+    setError(false);
+    setThumbUrl(item.thumbnailPath);
+  }, [item.thumbnailPath, item.id]);
+
+  if (error || !thumbUrl) {
+    return (
+      <div 
+        className="fallback-preview" 
+        style={{ 
+          display: 'flex', 
+          height: '100%', 
+          width: '100%', 
+          alignItems: 'center', 
+          justifyContent: 'center',
+          background: getCategoryGradient(item.category),
+          borderRadius: 'inherit',
+          color: '#f8fafc',
+          textShadow: '0 2px 4px rgba(0,0,0,0.5)',
+          fontWeight: 700,
+          fontFamily: "'Outfit', sans-serif"
+        }}
+      >
+        <span style={{ fontSize: className === 'list-preview' ? '1.1rem' : '1.7rem' }}>
+          {item.icon || '🪑'}
+        </span>
+      </div>
+    );
+  }
+
+  const srcUrl = buster ? `${thumbUrl}?t=${buster}` : thumbUrl;
+
+  return (
+    <img
+      src={srcUrl}
+      alt={item.name}
+      className={className || "furniture-preview"}
+      onError={() => setError(true)}
+      style={{
+        width: '100%',
+        height: '100%',
+        objectFit: 'contain',
+        borderRadius: 'inherit',
+        background: 'rgba(0, 0, 0, 0.15)'
+      }}
+    />
+  );
+}
+
 // Extract categories and structure them for sidebar tabs
 const CATEGORIES = [
   { id: 'Bedroom', label: 'Bedroom', icon: '🛏️' },
@@ -154,6 +225,10 @@ export default function FurnitureLibrary({ onClose, onSelect }) {
   const [selectedPlacement, setSelectedPlacement] = useState('all');
   const [selectedSubcategory, setSelectedSubcategory] = useState('all');
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
+  
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [genProgress, setGenProgress] = useState({ current: 0, total: 0 });
+  const [thumbnailBuster, setThumbnailBuster] = useState(Date.now());
   
   // Local state for Favorites and Recently Used
   const [favorites, setFavorites] = useState(() => {
@@ -280,8 +355,54 @@ export default function FurnitureLibrary({ onClose, onSelect }) {
           <h2 style={{ fontSize: '1.2rem', fontFamily: "'Outfit', sans-serif", fontWeight: 700, color: '#f8fafc' }}>Add Furniture</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>Browse or search the 3D interior catalog</p>
         </div>
-        <button onClick={onClose} className="action-btn" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '50%', padding: 6 }}><X size={16} /></button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button 
+            onClick={() => setIsGenerating(true)}
+            disabled={isGenerating}
+            className="action-btn"
+            title="Generate real thumbnails for all models"
+            style={{ 
+              background: 'rgba(255,255,255,0.03)', 
+              border: '1px solid var(--border)', 
+              borderRadius: '50%', 
+              padding: 6,
+              color: isGenerating ? 'var(--text-muted)' : 'var(--teal)',
+              opacity: isGenerating ? 0.5 : 1
+            }}
+          >
+            <Sparkles size={16} />
+          </button>
+          <button onClick={onClose} className="action-btn" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '50%', padding: 6 }}><X size={16} /></button>
+        </div>
       </div>
+
+      {/* Thumbnail Generation Progress Bar */}
+      {isGenerating && (
+        <div style={{
+          background: 'rgba(99, 102, 241, 0.12)',
+          borderBottom: '1px solid rgba(99, 102, 241, 0.25)',
+          padding: '8px 20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem', color: '#a78bfa' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <Loader size={12} style={{ animation: 'spin 1.5s linear infinite' }} />
+              Generating catalog thumbnails...
+            </span>
+            <span>{genProgress.current} / {genProgress.total}</span>
+          </div>
+          <div style={{ height: 4, width: '100%', background: 'rgba(255,255,255,0.05)', borderRadius: 2, overflow: 'hidden' }}>
+            <div style={{
+              height: '100%',
+              width: `${(genProgress.current / genProgress.total) * 100}%`,
+              background: 'linear-gradient(90deg, #a78bfa, #06b6d4)',
+              transition: 'width 0.2s ease-out'
+            }} />
+          </div>
+        </div>
+      )}
 
       {/* Search & Top Filters */}
       <div style={{ padding: '10px 20px', display: 'flex', flexDirection: 'column', gap: 10, borderBottom: '1px solid var(--border)' }}>
@@ -516,7 +637,9 @@ export default function FurnitureLibrary({ onClose, onSelect }) {
                           <Star size={12} fill={isFav ? '#fbbf24' : 'none'} style={{ color: isFav ? '#fbbf24' : '#94a3b8' }} />
                         </button>
 
-                        <div className="furniture-preview" style={{ height: 64, fontSize: '1.6rem' }}>{item.icon}</div>
+                        <div className="furniture-preview-container">
+                          <FurniturePreviewImage item={item} buster={thumbnailBuster} />
+                        </div>
                         <div className="furniture-info" style={{ padding: '6px 8px' }}>
                           <div className="furniture-name" style={{ fontSize: '0.75rem', lineHeight: '1.2', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{item.name}</div>
                           <div className="furniture-dim" style={{ fontSize: '0.62rem', marginTop: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -579,7 +702,9 @@ export default function FurnitureLibrary({ onClose, onSelect }) {
                           e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
                         }}
                       >
-                        <div style={{ fontSize: '1.4rem' }}>{item.icon}</div>
+                        <div style={{ width: 36, height: 36, borderRadius: 6, overflow: 'hidden', flexShrink: 0 }}>
+                          <FurniturePreviewImage item={item} buster={thumbnailBuster} className="list-preview" />
+                        </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: '0.78rem', fontWeight: 600, color: '#f8fafc', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{item.name}</div>
                           <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'flex', gap: 6, marginTop: 1 }}>
@@ -619,6 +744,17 @@ export default function FurnitureLibrary({ onClose, onSelect }) {
           </div>
         </div>
       </div>
+
+      {/* Offscreen R3F Thumbnail Generator */}
+      <ThumbnailGenerator 
+        items={CATALOG}
+        isGenerating={isGenerating}
+        onProgress={(curr, tot) => setGenProgress({ current: curr, total: tot })}
+        onComplete={() => {
+          setIsGenerating(false);
+          setThumbnailBuster(Date.now());
+        }}
+      />
     </motion.div>
   );
 }
