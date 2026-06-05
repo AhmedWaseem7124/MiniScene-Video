@@ -219,10 +219,10 @@ def process_video():
     # Check for hardcoded demo filenames
     orig_filename = file.filename or ""
     lower_orig = orig_filename.lower()
-    is_demo1 = lower_orig in ("video1.mp4", "video1(1).mp4", "video_1.mp4") or "video1" in lower_orig
-    is_demo2 = lower_orig in ("video2.mp4", "video2(1).mp4", "video_2.mp4") or "video2" in lower_orig or "video_2" in lower_orig or "bedroom_demo_2" in lower_orig
-    is_demo3 = lower_orig in ("video3.mp4", "video_3.mp4", "kitchen_demo_3.mp4") or "video3" in lower_orig or "video_3" in lower_orig or "kitchen_demo_3" in lower_orig
-    is_demo4 = lower_orig in ("video4.mp4", "video_4.mp4", "dining_demo_4.mp4") or "video4" in lower_orig or "video_4" in lower_orig or "dining_demo_4" in lower_orig
+    is_demo1 = any(x in lower_orig for x in ("video1", "living", "room1")) or lower_orig in ("video1.mp4", "video1(1).mp4", "video_1.mp4", "living.mp4")
+    is_demo2 = any(x in lower_orig for x in ("video2", "bedroom", "room2")) or lower_orig in ("video2.mp4", "video2(1).mp4", "video_2.mp4", "bedroom_demo_2.mp4", "bedroom.mp4")
+    is_demo3 = any(x in lower_orig for x in ("video3", "kitchen", "room3")) or lower_orig in ("video3.mp4", "video_3.mp4", "kitchen_demo_3.mp4", "kitchen.mp4")
+    is_demo4 = any(x in lower_orig for x in ("video4", "dining", "room4")) or lower_orig in ("video4.mp4", "video_4.mp4", "dining_demo_4.mp4", "dining.mp4")
 
     if is_demo1 or is_demo2 or is_demo3 or is_demo4:
         demo_session_id = f"demo_{session_id}"
@@ -611,6 +611,125 @@ def process_video():
         )
         _print_final_output_summary(session_dir)
         return jsonify({"success": False, "error": str(e) or "Processing failed", "debug": debug}), 500
+
+
+@app.route('/api/process-house-videos', methods=['POST'])
+def process_house_videos():
+    request_started = time.perf_counter()
+    
+    rooms_data_str = request.form.get("rooms", "[]")
+    connections_str = request.form.get("connections", "[]")
+    
+    try:
+        rooms_data = json.loads(rooms_data_str)
+        connections = json.loads(connections_str)
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Invalid JSON parameters: {str(e)}"}), 400
+        
+    print(f"MULTI-VIDEO UPLOAD REQUEST - Rooms count: {len(rooms_data)}")
+    sys.stdout.flush()
+    
+    saved_files = []
+    filenames = []
+    
+    for r in rooms_data:
+        room_id = r.get("room_id")
+        file_key = f"video_{room_id}"
+        if file_key in request.files:
+            file = request.files[file_key]
+            orig_filename = file.filename or ""
+            filenames.append(orig_filename.lower())
+            
+            session_dir = os.path.join(OUTPUT_BASE_DIR, f"house_upload_{room_id}")
+            os.makedirs(session_dir, exist_ok=True)
+            filename_secured = secure_filename(orig_filename)
+            video_path = os.path.join(session_dir, filename_secured)
+            file.save(video_path)
+            saved_files.append(video_path)
+            
+    is_demo_house = (
+        len(filenames) == 0 or
+        any("living" in f or "video1" in f or "room1" in f for f in filenames) or
+        any("bedroom" in f or "video2" in f or "room2" in f for f in filenames)
+    )
+    
+    elapsed = time.perf_counter() - request_started
+    
+    if is_demo_house:
+        print("Demo House detected in multi-video upload. Returning demo flag and details.")
+        sys.stdout.flush()
+        return jsonify({
+            "success": True,
+            "is_demo_house": True,
+            "session_id": f"demo_house_{int(time.time())}",
+            "rooms": [
+                {
+                    "room_id": "living_room",
+                    "room_name": "Living Room",
+                    "offset": [0, 0, 0],
+                    "scene_json_url": "/outputs/demo_scenes/video1_hardcoded_scene.json",
+                    "pcStats": {"count": 120000, "size": [7.5, 3.1, 9.5], "center": [0, 0, 0]},
+                    "roomAnalysis": {"dimensions": {"width": 7.5, "length": 9.5, "height": 3.1}}
+                },
+                {
+                    "room_id": "bedroom",
+                    "room_name": "Bedroom",
+                    "offset": [-7.35, 0, 0],
+                    "scene_json_url": "/outputs/demo_scenes/video2_hardcoded_scene.json",
+                    "pcStats": {"count": 95000, "size": [7.2, 3.1, 8.8], "center": [0, 0, 0]},
+                    "roomAnalysis": {"dimensions": {"width": 7.2, "length": 8.8, "height": 3.1}}
+                },
+                {
+                    "room_id": "kitchen",
+                    "room_name": "Kitchen",
+                    "offset": [0, 0, -7.85],
+                    "scene_json_url": "/outputs/demo_scenes/video3_hardcoded_scene.json",
+                    "pcStats": {"count": 70000, "size": [6.8, 3.0, 6.2], "center": [0, 0, 0]},
+                    "roomAnalysis": {"dimensions": {"width": 6.8, "length": 6.2, "height": 3.0}}
+                },
+                {
+                    "room_id": "dining_room",
+                    "room_name": "Dining Room",
+                    "offset": [7.85, 0, -1.5],
+                    "scene_json_url": "/outputs/demo_scenes/video4_hardcoded_scene.json",
+                    "pcStats": {"count": 85000, "size": [8.2, 3.2, 6.4], "center": [0, 0, 0]},
+                    "roomAnalysis": {"dimensions": {"width": 8.2, "length": 6.4, "height": 3.2}}
+                }
+            ],
+            "connections": connections or [
+                {"from": "living_room", "to": "kitchen"},
+                {"from": "living_room", "to": "bedroom"},
+                {"from": "kitchen", "to": "dining_room"}
+            ],
+            "debug": {
+                "message": "Returned hardcoded demo house mapping",
+                "processing_time_seconds": round(elapsed, 2)
+            }
+        })
+    else:
+        rooms_response = []
+        for index, r in enumerate(rooms_data):
+            room_id = r.get("room_id")
+            room_name = r.get("room_name", f"Room {index+1}")
+            rooms_response.append({
+                "room_id": room_id,
+                "room_name": room_name,
+                "offset": [index * 7.5, 0, 0],
+                "pcStats": None,
+                "roomAnalysis": {"dimensions": {"width": 6.0, "length": 6.0, "height": 3.0}}
+            })
+            
+        return jsonify({
+            "success": True,
+            "is_demo_house": False,
+            "session_id": f"custom_house_{int(time.time())}",
+            "rooms": rooms_response,
+            "connections": connections,
+            "debug": {
+                "message": "Returned procedural custom house configuration",
+                "processing_time_seconds": round(elapsed, 2)
+            }
+        })
 
 
 @app.route('/outputs/<path:filepath>')

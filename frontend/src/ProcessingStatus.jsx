@@ -1,5 +1,5 @@
-import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle2, Loader2, Clock } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { CheckCircle2 } from 'lucide-react';
 
 const STAGES = [
   { id: 'upload',  icon: '📤', label: 'Uploading video',           desc: 'Sending to backend...' },
@@ -22,13 +22,30 @@ const DEMO_STAGES = [
   { id: 'finalize', icon: '✨', label: 'Finalizing interior layout',desc: 'Finalizing interior layout...' },
 ];
 
-export default function ProcessingStatus({ isProcessing, currentStage = 'recon', elapsedSeconds = 0, sessionId, onSkip, isDemo = false }) {
+const MULTI_ROOM_STAGES = [
+  { id: 'uploading', icon: '📤', label: 'Uploading videos...', desc: 'Uploading all room files to AI node...' },
+  { id: 'extracting', icon: '🎬', label: 'Extracting frames...', desc: 'Extracting frame matrices for reconstruction...' },
+  { id: 'depth', icon: '📐', label: 'Estimating depth...', desc: 'Estimating camera depth per room...' },
+  { id: 'geometry', icon: '🏠', label: 'Building room geometry...', desc: 'Constructing walls, floor boundaries...' },
+  { id: 'furniture', icon: '📦', label: 'Detecting furniture...', desc: 'Running 3D bounding box object detection...' },
+  { id: 'floorplan', icon: '🗺️', label: 'Generating floor plan...', desc: 'Projecting top-down boundaries...' },
+  { id: 'connecting', icon: '🚪', label: 'Connecting rooms...', desc: 'Locating doorway paths and passages...' },
+  { id: 'graph', icon: '🕸️', label: 'Building house graph...', desc: 'Establishing spatial relation linkages...' },
+  { id: 'twin', icon: '🏢', label: 'Generating digital twin...', desc: 'Compiling rooms into master scene layout...' },
+  { id: 'finalizing', icon: '✨', label: 'Finalizing scene...', desc: 'Creating editable lighting and materials...' },
+];
+
+export default function ProcessingStatus({ isProcessing, currentStage = 'recon', elapsedSeconds = 0, sessionId, onSkip, isDemo = false, isMultiRoom = false }) {
   if (!isProcessing) return null;
 
-  const stagesList = isDemo ? DEMO_STAGES : STAGES;
+  const stagesList = isMultiRoom ? MULTI_ROOM_STAGES : (isDemo ? DEMO_STAGES : STAGES);
   const activeIndex = Math.max(0, stagesList.findIndex(s => s.id === currentStage));
-  const progress = isDemo ? Math.min(100, Math.round((elapsedSeconds / 20) * 100)) : 0;
-  const title = isDemo ? `Processing video... ${progress}%` : (currentStage === 'done' ? 'Loading 3D Scene...' : `Processing video... ${elapsedSeconds}s`);
+  
+  const totalSeconds = isMultiRoom ? 30 : 20;
+  const progress = (isDemo || isMultiRoom) ? Math.min(100, Math.round((elapsedSeconds / totalSeconds) * 100)) : 0;
+  const title = (isDemo || isMultiRoom) 
+    ? `Processing Scene... ${progress}%` 
+    : (currentStage === 'done' ? 'Loading 3D Scene...' : `Processing video... ${elapsedSeconds}s`);
 
   return (
     <motion.div
@@ -40,7 +57,8 @@ export default function ProcessingStatus({ isProcessing, currentStage = 'recon',
         background: 'rgba(8, 11, 18, 0.95)',
         backdropFilter: 'blur(16px)',
         zIndex: 200, display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', gap: 32,
+        alignItems: 'center', justifyContent: 'center', gap: 24,
+        overflowY: 'auto', padding: '40px 20px'
       }}
     >
       {/* Header */}
@@ -59,13 +77,16 @@ export default function ProcessingStatus({ isProcessing, currentStage = 'recon',
           </p>
         )}
         <p style={{ color: 'var(--text-muted)', marginTop: 6, fontSize: '0.9rem' }}>
-          Computer vision is analyzing your video and building a 3D scene
+          {isMultiRoom 
+            ? 'MiniScene AI is processing all uploaded videos and stitching rooms into a house'
+            : 'Computer vision is analyzing your video and building a 3D scene'
+          }
         </p>
       </div>
 
-      {/* Progress Bar (Demo Only) */}
-      {isDemo && (
-        <div style={{ width: '100%', maxWidth: 420, display: 'flex', flexDirection: 'column', gap: 6, marginTop: -10 }}>
+      {/* Progress Bar (Demo / MultiRoom Only) */}
+      {(isDemo || isMultiRoom) && (
+        <div style={{ width: '100%', maxWidth: 460, display: 'flex', flexDirection: 'column', gap: 6, marginTop: -5 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
             <span>Reconstruction Progress</span>
             <span style={{ color: '#06b6d4', fontWeight: 'bold' }}>{progress}%</span>
@@ -86,7 +107,7 @@ export default function ProcessingStatus({ isProcessing, currentStage = 'recon',
       )}
 
       {/* Stage list */}
-      <div style={{ width: '100%', maxWidth: 420, background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ width: '100%', maxWidth: 460, background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 16, padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
         {stagesList.map((stage, idx) => {
           const done = idx < activeIndex;
           const active = idx === activeIndex;
@@ -95,29 +116,29 @@ export default function ProcessingStatus({ isProcessing, currentStage = 'recon',
             <motion.div
               key={stage.id}
               initial={false}
-              animate={{ opacity: pending ? 0.4 : 1 }}
-              style={{ display: 'flex', alignItems: 'center', gap: 14 }}
+              animate={{ opacity: pending ? 0.35 : 1 }}
+              style={{ display: 'flex', alignItems: 'center', gap: 12 }}
             >
               {/* Icon */}
-              <div style={{ width: 34, height: 34, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: done ? 'rgba(16,185,129,0.15)' : active ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.04)', border: `1px solid ${done ? 'rgba(16,185,129,0.3)' : active ? 'rgba(99,102,241,0.4)' : 'var(--border)'}` }}>
+              <div style={{ width: 30, height: 30, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, background: done ? 'rgba(16,185,129,0.12)' : active ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.03)', border: `1px solid ${done ? 'rgba(16,185,129,0.25)' : active ? 'rgba(99,102,241,0.35)' : 'var(--border)'}` }}>
                 {done
-                  ? <CheckCircle2 size={18} color="#10b981" />
+                  ? <CheckCircle2 size={16} color="#10b981" />
                   : active
-                    ? <motion.span animate={{ scale: [1, 1.15, 1] }} transition={{ repeat: Infinity, duration: 1.2 }} style={{ fontSize: '1rem' }}>{stage.icon}</motion.span>
-                    : <span style={{ fontSize: '0.95rem', opacity: 0.5 }}>{stage.icon}</span>
+                    ? <motion.span animate={{ scale: [1, 1.15, 1] }} transition={{ repeat: Infinity, duration: 1.2 }} style={{ fontSize: '0.9rem' }}>{stage.icon}</motion.span>
+                    : <span style={{ fontSize: '0.85rem', opacity: 0.5 }}>{stage.icon}</span>
                 }
               </div>
 
               {/* Text */}
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.88rem', fontWeight: active ? 700 : 500, color: done ? '#6ee7b7' : active ? 'white' : 'var(--text-muted)' }}>
+                <div style={{ fontSize: '0.82rem', fontWeight: active ? 700 : 500, color: done ? '#6ee7b7' : active ? 'white' : 'var(--text-muted)' }}>
                   {stage.label}
                 </div>
                 {active && (
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}
+                    style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 1 }}
                   >
                     {stage.desc}
                   </motion.div>
@@ -126,8 +147,8 @@ export default function ProcessingStatus({ isProcessing, currentStage = 'recon',
 
               {/* Active shimmer bar */}
               {active && (
-                <div style={{ width: 60, flexShrink: 0 }}>
-                  <div className="shimmer-bar" />
+                <div style={{ width: 50, flexShrink: 0 }}>
+                  <div className="shimmer-bar" style={{ height: '3px' }} />
                 </div>
               )}
             </motion.div>
@@ -168,9 +189,12 @@ export default function ProcessingStatus({ isProcessing, currentStage = 'recon',
       )}
 
       {/* CV identity badge */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-        {['Frame Extraction', 'Depth Estimation', 'Point Cloud', 'Room Geometry'].map(label => (
-          <span key={label} className="cv-badge">{label}</span>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8 }}>
+        {(isMultiRoom 
+          ? ['Stitching Engine', 'Graph Layout', 'Multi-Video Calibration', 'Digital Twin']
+          : ['Frame Extraction', 'Depth Estimation', 'Point Cloud', 'Room Geometry']
+        ).map(label => (
+          <span key={label} className="cv-badge" style={{ padding: '2px 8px', fontSize: '0.65rem' }}>{label}</span>
         ))}
       </div>
     </motion.div>

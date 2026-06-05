@@ -1,12 +1,11 @@
-import { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Film, Scan, Box, Sofa } from 'lucide-react';
+import { Film, Home, Sofa } from 'lucide-react';
 
 const STEPS = [
-  { icon: '🎬', emoji: true, label: 'Upload Video' },
-  { icon: '🔬', emoji: true, label: 'CV Analysis' },
-  { icon: '🏠', emoji: true, label: '3D Room' },
-  { icon: '🛋️', emoji: true, label: 'Design It' },
+  { icon: '🎬', emoji: true, label: 'Upload Videos' },
+  { icon: '🔬', emoji: true, label: 'AI Synthesis' },
+  { icon: '🏠', emoji: true, label: 'Digital Twin' },
+  { icon: '🛋️', emoji: true, label: 'Edit & Theme' },
 ];
 
 const PARTICLES = Array.from({ length: 18 }, (_, i) => ({
@@ -17,7 +16,7 @@ const PARTICLES = Array.from({ length: 18 }, (_, i) => ({
   duration: Math.random() * 3 + 3,
 }));
 
-export default function LandingHero({ onUpload, onCreateScratch }) {
+export default function LandingHero({ onUploadSingle, onUploadFullHouse, onCreateEmptyHouse }) {
   return (
     <div className="hero-overlay">
       {/* Ambient particles */}
@@ -38,7 +37,7 @@ export default function LandingHero({ onUpload, onCreateScratch }) {
 
       <motion.div
         className="hero-card"
-        style={{ maxWidth: '680px', width: '92%' }}
+        style={{ maxWidth: '960px', width: '92%' }}
         initial={{ opacity: 0, y: 30, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.55, ease: 'easeOut' }}
@@ -46,14 +45,14 @@ export default function LandingHero({ onUpload, onCreateScratch }) {
         {/* Badge */}
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 20 }}>
           <span className="cv-badge">
-            <span>🤖</span> Computer Vision · Depth Estimation · 3D Reconstruction
+            <span>✨</span> MiniScene AI Flagship — Multi-Room Digital Twin Edition
           </span>
         </div>
 
         {/* Title */}
         <h1 className="hero-title">MiniScene AI</h1>
         <p className="hero-sub" style={{ marginBottom: 24 }}>
-          Upload a room video for AI reconstruction, or design an empty room manually from scratch.
+          Generate a beautiful 3D digital twin from room videos or design a custom layout from scratch.
         </p>
 
         {/* Flow diagram */}
@@ -79,11 +78,11 @@ export default function LandingHero({ onUpload, onCreateScratch }) {
         {/* Choices Grid */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
           gap: '20px',
           marginBottom: '24px'
         }}>
-          {/* Card 1 */}
+          {/* Card 1: Single Room */}
           <motion.div
             style={{
               background: 'rgba(255, 255, 255, 0.03)',
@@ -103,19 +102,51 @@ export default function LandingHero({ onUpload, onCreateScratch }) {
               <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'rgba(6, 182, 212, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Film size={22} color="var(--teal)" />
               </div>
-              <h3 style={{ fontSize: '1rem', fontWeight: 700, fontFamily: "'Outfit', sans-serif", color: '#f8fafc' }}>Upload Room Video</h3>
-              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>Reconstruct a room from video using computer vision</p>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, fontFamily: "'Outfit', sans-serif", color: '#f8fafc' }}>Single Room</h3>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>Reconstruct a single room from video using computer vision depth mapping.</p>
             </div>
             <button
               className="btn-teal"
-              style={{ fontSize: '0.85rem', padding: '10px 20px', width: '100%', justifyContent: 'center', borderRadius: '20px' }}
-              onClick={onUpload}
+              style={{ fontSize: '0.82rem', padding: '10px 16px', width: '100%', justifyContent: 'center', borderRadius: '20px' }}
+              onClick={onUploadSingle}
             >
-              Upload Video
+              Reconstruct Single Room
             </button>
           </motion.div>
 
-          {/* Card 2 */}
+          {/* Card 2: Full House */}
+          <motion.div
+            style={{
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid var(--border)',
+              borderRadius: '16px',
+              padding: '24px 20px',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '16px',
+              transition: 'border-color 0.2s',
+            }}
+            whileHover={{ scale: 1.03, borderColor: '#a78bfa' }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'rgba(167, 139, 250, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Home size={22} color="#a78bfa" />
+              </div>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, fontFamily: "'Outfit', sans-serif", color: '#f8fafc' }}>Full House</h3>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>Upload multiple room videos and stitch them into a complete editable house.</p>
+            </div>
+            <button
+              className="btn-primary"
+              style={{ fontSize: '0.82rem', padding: '10px 16px', width: '100%', justifyContent: 'center', borderRadius: '20px', background: 'linear-gradient(135deg, #a78bfa, #8b5cf6)' }}
+              onClick={onUploadFullHouse}
+            >
+              Reconstruct Full House
+            </button>
+          </motion.div>
+
+          {/* Card 3: Empty House */}
           <motion.div
             style={{
               background: 'rgba(255, 255, 255, 0.03)',
@@ -135,15 +166,15 @@ export default function LandingHero({ onUpload, onCreateScratch }) {
               <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'rgba(99, 102, 241, 0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Sofa size={22} color="var(--accent)" />
               </div>
-              <h3 style={{ fontSize: '1rem', fontWeight: 700, fontFamily: "'Outfit', sans-serif", color: '#f8fafc' }}>Start From Empty Room</h3>
-              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>Design your own room manually from scratch</p>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, fontFamily: "'Outfit', sans-serif", color: '#f8fafc' }}>Empty House</h3>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>Design a multi-room house layout manually and place furniture.</p>
             </div>
             <button
               className="btn-primary"
-              style={{ fontSize: '0.85rem', padding: '10px 20px', width: '100%', justifyContent: 'center', borderRadius: '20px' }}
-              onClick={onCreateScratch}
+              style={{ fontSize: '0.82rem', padding: '10px 16px', width: '100%', justifyContent: 'center', borderRadius: '20px' }}
+              onClick={onCreateEmptyHouse}
             >
-              Create Empty Room
+              Start From Empty House
             </button>
           </motion.div>
         </div>
@@ -151,8 +182,8 @@ export default function LandingHero({ onUpload, onCreateScratch }) {
         {/* CV Pipeline note */}
         <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: 16 }}>
           <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
-            <strong style={{ color: 'rgba(255,255,255,0.5)' }}>CV Pipeline Heuristic:</strong>{' '}
-            Monocular depth maps extract room corners and construct walls/floors, while the hardcoded empty room initializes design bounds directly inside WebGL without point clouds.
+            <strong style={{ color: 'rgba(255,255,255,0.5)' }}>Stitching Engine:</strong>{' '}
+            Combines monocular depth room structures via adjacent wall-alignment heuristics into a single synchronized digital twin.
           </p>
         </div>
       </motion.div>

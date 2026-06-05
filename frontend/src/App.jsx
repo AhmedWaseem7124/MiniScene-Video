@@ -23,6 +23,10 @@ import LandingHero from './LandingHero';
 import SceneReadyBanner from './SceneReadyBanner';
 import CreateScratchModal from './CreateScratchModal';
 import RoomSettingsPanel from './RoomSettingsPanel';
+import MultiVideoUpload from './MultiVideoUpload';
+import EmptyHouseModal from './EmptyHouseModal';
+import FloorPlanPanel from './FloorPlanPanel';
+import Minimap from './Minimap';
 
 const FURNITURE_HEIGHTS = {
   Sofa: 0.9,
@@ -242,8 +246,16 @@ function App() {
   }, []);
 
   const [sceneType, setSceneType] = useState('reconstructed'); // 'reconstructed' | 'demo' | 'scratch'
+  const [activeHouse, setActiveHouse] = useState(null);
+  const [showMultiVideoUpload, setShowMultiVideoUpload] = useState(false);
+  const [showEmptyHouseModal, setShowEmptyHouseModal] = useState(false);
   const [showCreateScratchModal, setShowCreateScratchModal] = useState(false);
+  const [isMultiRoom, setIsMultiRoom] = useState(false);
+  const [currentView, setCurrentView] = useState('3d'); // '3d' | 'floorplan'
+  const [presentationMode, setPresentationMode] = useState(false);
+  const [showExportDropdown, setShowExportDropdown] = useState(false);
   const [showRoomSettings, setShowRoomSettings] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   const [viewSettings, setViewSettings] = useState({
     viewMode: 'hybrid',
@@ -293,6 +305,107 @@ function App() {
     setSceneLoaded(true);
     setPendingDemoScene(null);
   }, []);
+
+  // Wrap single room inside activeHouse once loaded
+  useEffect(() => {
+    if (sceneLoaded && !activeHouse && sceneType !== 'house') {
+      const roomDim = demoSceneData?.room?.dimensions || { width: 7.5, length: 9.5, height: 3.1 };
+      const roomFloor = demoSceneData?.room?.floor || { position: [0,0,0], size: [roomDim.width, 0.04, roomDim.length], color: "#ded3c3", material: "wood" };
+      const roomWalls = demoSceneData?.room?.walls || [
+        { id: "back_wall", position: [0, roomDim.height/2, -roomDim.length/2], size: [roomDim.width, roomDim.height, 0.04], color: "#b9b1a6" },
+        { id: "left_wall", position: [-roomDim.width/2, roomDim.height/2, 0], size: [0.04, roomDim.height, roomDim.length], color: "#c8beb1" },
+        { id: "right_wall", position: [roomDim.width/2, roomDim.height/2, 0], size: [0.04, roomDim.height, roomDim.length], color: "#9a7551" }
+      ];
+      const roomCeiling = demoSceneData?.room?.ceiling || { position: [0, roomDim.height, 0], size: [roomDim.width, 0.04, roomDim.length], color: "#f2eee8" };
+
+      const singleHouse = {
+        name: demoSceneData?.metadata?.scene_name || 'Single Room Layout',
+        rooms: [
+          {
+            room_id: 'room_1',
+            room_name: 'Single Room',
+            offset: [0, 0, 0],
+            room: {
+              dimensions: roomDim,
+              floor: roomFloor,
+              walls: roomWalls,
+              ceiling: roomCeiling
+            },
+            furniture: sceneFurniture,
+            removedObjects: removedObjects,
+            pointCloudUrl,
+            pcStats,
+            roomAnalysis,
+            semanticUrl,
+            analysisUrl,
+            graphUrl
+          }
+        ],
+        connections: [],
+        currentRoomId: 'room_1'
+      };
+      setActiveHouse(singleHouse);
+    }
+  }, [sceneLoaded, activeHouse, sceneType, demoSceneData, sceneFurniture, removedObjects, pointCloudUrl, pcStats, roomAnalysis, semanticUrl, graphUrl]);
+
+  // Sync activeHouse room selections to local states
+  useEffect(() => {
+    if (activeHouse) {
+      const activeRoomId = activeHouse.currentRoomId;
+      if (activeRoomId === 'whole_house') {
+        const allFurniture = activeHouse.rooms.flatMap(r => {
+          return (r.furniture || []).map(f => ({
+            ...f,
+            displayName: `${f.name} (${r.room_name})`
+          }));
+        });
+        setSceneFurniture(allFurniture);
+        setPointCloudUrl(null);
+      } else {
+        const activeRoom = activeHouse.rooms.find(r => r.room_id === activeRoomId);
+        if (activeRoom) {
+          setSceneFurniture(activeRoom.furniture || []);
+          setRemovedObjects(activeRoom.removedObjects || []);
+          setPointCloudUrl(activeRoom.pointCloudUrl);
+          setPcStats(activeRoom.pcStats);
+          setRoomAnalysis(activeRoom.roomAnalysis);
+          setSemanticUrl(activeRoom.semanticUrl);
+          setAnalysisUrl(activeRoom.analysisUrl);
+          setGraphUrl(activeRoom.graphUrl);
+          if (activeRoom.room) {
+            setDemoSceneData({ room: activeRoom.room });
+          }
+          setIsHardcodedDemo(!activeRoom.pointCloudUrl);
+        }
+      }
+    }
+  }, [activeHouse?.currentRoomId]);
+
+  // Sync local changes back to activeHouse rooms list
+  useEffect(() => {
+    if (activeHouse && activeHouse.currentRoomId !== 'whole_house') {
+      setActiveHouse(prev => {
+        if (!prev) return prev;
+        const updatedRooms = prev.rooms.map(room => {
+          if (room.room_id === prev.currentRoomId) {
+            return {
+              ...room,
+              furniture: sceneFurniture,
+              removedObjects: removedObjects
+            };
+          }
+          return room;
+        });
+        
+        // Prevent infinite loops by only updating if there's an actual mismatch
+        const activeRoom = prev.rooms.find(r => r.room_id === prev.currentRoomId);
+        if (activeRoom && (activeRoom.furniture !== sceneFurniture || activeRoom.removedObjects !== removedObjects)) {
+          return { ...prev, rooms: updatedRooms };
+        }
+        return prev;
+      });
+    }
+  }, [sceneFurniture, removedObjects]);
 
   const handleUndo = useCallback(() => {
     setHistory(prevHistory => {
@@ -538,7 +651,28 @@ function App() {
 
     setSceneFurniture(prev => prev.filter(item => item.id !== id));
     if (selectedId === id) setSelectedId(null);
-  }, [selectedId]);
+
+    // Sync deletion to activeHouse
+    if (activeHouse) {
+      setActiveHouse(prev => {
+        if (!prev) return prev;
+        const updatedRooms = prev.rooms.map(room => {
+          const hasFurniture = (room.furniture || []).some(f => f.id === id);
+          if (hasFurniture) {
+            return {
+              ...room,
+              furniture: room.furniture.filter(f => f.id !== id),
+              removedObjects: deletedObj && deletedObj.detected 
+                ? [...(room.removedObjects || []), deletedObj]
+                : (room.removedObjects || [])
+            };
+          }
+          return room;
+        });
+        return { ...prev, rooms: updatedRooms };
+      });
+    }
+  }, [selectedId, activeHouse]);
 
   const handleDuplicatePlaced = useCallback((item) => {
     if (!item) return;
@@ -551,8 +685,8 @@ function App() {
       originalPosition: [item.position[0] + 0.5, item.position[1], item.position[2] + 0.5],
       originalRotation: [...item.rotation],
       originalScale: [...item.scale],
-      originalColor: item.color,
-      originalMaterial: item.material,
+      color: item.color,
+      material: item.material,
       detected: false
     };
 
@@ -560,13 +694,55 @@ function App() {
     setRedoStack([]);
     setSceneFurniture(prev => [...prev, newItem]);
     setSelectedId(newItem.id);
-  }, []);
+
+    // Sync duplication to activeHouse
+    if (activeHouse) {
+      setActiveHouse(prev => {
+        if (!prev) return prev;
+        const activeRoomId = prev.currentRoomId;
+        const updatedRooms = prev.rooms.map(room => {
+          const isTargetRoom = activeRoomId === 'whole_house' 
+            ? (room.furniture || []).some(f => f.id === item.id)
+            : room.room_id === activeRoomId;
+            
+          if (isTargetRoom) {
+            return {
+              ...room,
+              furniture: [...(room.furniture || []), newItem]
+            };
+          }
+          return room;
+        });
+        return { ...prev, rooms: updatedRooms };
+      });
+    }
+  }, [activeHouse]);
 
   const handleUpdateObject = useCallback((id, updates) => {
     setHistory(h => [...h, JSON.stringify(sceneFurnitureRef.current)]);
     setRedoStack([]);
+    
+    // Update local state first
     setSceneFurniture(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
-  }, []);
+    
+    // Sync to activeHouse
+    if (activeHouse) {
+      setActiveHouse(prev => {
+        if (!prev) return prev;
+        const updatedRooms = prev.rooms.map(room => {
+          const hasFurniture = (room.furniture || []).some(f => f.id === id);
+          if (hasFurniture) {
+            return {
+              ...room,
+              furniture: room.furniture.map(f => f.id === id ? { ...f, ...updates } : f)
+            };
+          }
+          return room;
+        });
+        return { ...prev, rooms: updatedRooms };
+      });
+    }
+  }, [activeHouse]);
 
   const handleSnapToWall = useCallback((id) => {
     const obj = sceneFurnitureRef.current.find(item => item.id === id);
@@ -1007,6 +1183,678 @@ function App() {
     }
   };
 
+  const handleUploadFullHouse = async (roomsData, connections) => {
+    setShowMultiVideoUpload(false);
+    
+    if (demoTimerRef.current) {
+      clearInterval(demoTimerRef.current);
+      demoTimerRef.current = null;
+    }
+    setPendingDemoScene(null);
+    setSceneFurniture([]);
+    setSelectedId(null);
+    setSceneLoaded(false);
+    setPcStats(null);
+    setSessionStats(null);
+    setPointCloudUrl(null);
+    setObjectsUrl(null);
+    setRemovedObjects([]);
+    
+    const hSessionId = `house_${Date.now()}`;
+    setSessionId(hSessionId);
+    setProcessState('PROCESSING_DEMO');
+    setIsMultiRoom(true);
+    setElapsedSeconds(0);
+    setProcessingStage('uploading');
+
+    const startTime = Date.now();
+    
+    // Build multi-video form data to upload to Flask backend
+    const formData = new FormData();
+    const roomsMetadata = roomsData.map(r => ({
+      room_id: r.room_id,
+      room_name: r.room_name,
+      filename: r.video_file ? r.video_file.name : ''
+    }));
+    formData.append('rooms', JSON.stringify(roomsMetadata));
+    formData.append('connections', JSON.stringify(connections || []));
+    
+    roomsData.forEach(r => {
+      if (r.video_file) {
+        formData.append(`video_${r.room_id}`, r.video_file);
+      }
+    });
+
+    let backendResponse = null;
+    let backendError = null;
+
+    const backendPromise = fetch('http://127.0.0.1:5000/api/process-house-videos', {
+      method: 'POST',
+      body: formData,
+    })
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP error ${res.status}`);
+        return res.json();
+      })
+      .then(data => {
+        backendResponse = data;
+        console.log("Multi-video upload response received:", data);
+      })
+      .catch(err => {
+        backendError = err;
+        console.error("Multi-video upload error:", err);
+      });
+
+    demoTimerRef.current = setInterval(async () => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      setElapsedSeconds(elapsed);
+
+      // Map elapsed seconds to multi-room stages (10 stages total, 3s each)
+      const stages = ['uploading', 'extracting', 'depth', 'geometry', 'furniture', 'floorplan', 'connecting', 'graph', 'twin', 'finalizing'];
+      const currentIdx = Math.min(stages.length - 1, Math.floor(elapsed / 3));
+      setProcessingStage(stages[currentIdx]);
+
+      if (elapsed >= 30) {
+        if (backendResponse === null && backendError === null) {
+          setProcessingStage('finalizing');
+          return;
+        }
+
+        clearInterval(demoTimerRef.current);
+        demoTimerRef.current = null;
+
+        if (backendError) {
+          alert('Failed to process house videos: ' + backendError.message);
+          setProcessState('ERROR');
+          return;
+        }
+
+        if (backendResponse && backendResponse.success) {
+          try {
+            const fetchScene = async (url) => {
+              const res = await fetch(`http://127.0.0.1:5000${url}`);
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              return res.json();
+            };
+
+            const mapToModelType = (label) => {
+              const l = label.toLowerCase();
+              if (l.includes('curtain') || l.includes('blind') || l.includes('rail')) return 'Curtain';
+              if (l.includes('king')) return 'KingBed';
+              if (l.includes('bed') && !l.includes('side')) return 'Bed';
+              if (l.includes('nightstand') || l.includes('bedside') || l.includes('drawer')) return 'BedsideTable';
+              if (l.includes('refrigerator') || l.includes('fridge')) return 'Refrigerator';
+              if (l.includes('oven')) return 'OvenStack';
+              if (l.includes('display_cabinet')) return 'DisplayCabinet';
+              if (l.includes('kitchen_cabinet') || l.includes('lower_kitchen') || l.includes('base_cabinet') || l.includes('cabinet_main')) return 'KitchenCabinet';
+              if (l.includes('wardrobe')) return 'Wardrobe';
+              if (l.includes('console') || l.includes('vanity')) return 'Console';
+              if (l.includes('mirror')) return 'WallMirror';
+              if (l.includes('pendant') || l.includes('chandelier')) return 'PendantLight';
+              if (l.includes('rug')) return 'Rug';
+              if (l.includes('sofa') || l.includes('sectional') || l.includes('chaise')) return 'Sofa';
+              if (l.includes('table')) return 'Table';
+              if (l.includes('chair') || l.includes('stool')) return 'Chair';
+              if (l.includes('plant')) return 'Plant';
+              return 'Decoration';
+            };
+
+            const prepFurniture = (objs, labelText) => {
+              return (objs || []).map((o, idx) => ({
+                ...o,
+                id: o.id || `obj_${labelText}_${idx}`,
+                type: mapToModelType(o.label || 'object'),
+                position: o.position,
+                rotation: [0, o.rotation_y || 0, 0],
+                scale: o.scale || [1, 1, 1],
+                size: o.size || [1, 1, 1],
+                color: o.color || '#d6cabc',
+                material: o.material || 'matte',
+                detected: true,
+                originalPosition: [...o.position],
+                originalRotation: [0, o.rotation_y || 0, 0],
+                originalScale: o.scale ? [...o.scale] : [1, 1, 1]
+              }));
+            };
+
+            if (backendResponse.is_demo_house) {
+              const fetchedScenes = await Promise.all(
+                backendResponse.rooms.map(async (room) => {
+                  const data = await fetchScene(room.scene_json_url);
+                  return { roomInfo: room, sceneData: data };
+                })
+              );
+
+              const demoHouse = {
+                name: 'My Stitched Apartment',
+                rooms: fetchedScenes.map(item => ({
+                  room_id: item.roomInfo.room_id,
+                  room_name: item.roomInfo.room_name,
+                  offset: item.roomInfo.offset,
+                  room: item.sceneData.room,
+                  furniture: prepFurniture(item.sceneData.objects, item.roomInfo.room_id),
+                  removedObjects: [],
+                  pointCloudUrl: null,
+                  pcStats: item.roomInfo.pcStats,
+                  roomAnalysis: item.roomInfo.roomAnalysis
+                })),
+                connections: backendResponse.connections,
+                currentRoomId: 'whole_house'
+              };
+
+              setActiveHouse(demoHouse);
+              setSceneType('house');
+              setSceneLoaded(true);
+              setProcessState('READY');
+            } else {
+              const customRooms = backendResponse.rooms.map((room, index) => {
+                const offset = room.offset;
+                const width = room.roomAnalysis.dimensions.width;
+                const length = room.roomAnalysis.dimensions.length;
+                const height = room.roomAnalysis.dimensions.height;
+                const wallColor = '#e2e8f0';
+
+                return {
+                  room_id: room.room_id,
+                  room_name: room.room_name,
+                  offset,
+                  room: {
+                    dimensions: { width, length, height },
+                    floor: { position: [0, 0, 0], size: [width, 0.04, length], color: '#cbd5e1', material: 'tile' },
+                    walls: [
+                      { id: 'back_wall', position: [0, height/2, -length/2], size: [width, height, 0.02], color: wallColor },
+                      { id: 'left_wall', position: [-width/2, height/2, 0], size: [0.02, height, length], color: wallColor },
+                      { id: 'right_wall', position: [width/2, height/2, 0], size: [0.02, height, length], color: wallColor },
+                    ],
+                    ceiling: { position: [0, height, 0], size: [width, 0.02, length], color: '#ffffff' }
+                  },
+                  furniture: [
+                    {
+                      id: `sofa_${index}`,
+                      name: 'Modern Sofa',
+                      type: 'Sofa',
+                      category: 'floor',
+                      position: [0, 0.45, -1.0],
+                      rotation: [0, 0, 0],
+                      scale: [1, 1, 1],
+                      size: [2.1, 0.9, 0.9],
+                      color: '#6366f1',
+                      material: 'fabric',
+                      detected: true,
+                      originalPosition: [0, 0.45, -1.0],
+                      originalRotation: [0, 0, 0],
+                      originalScale: [1, 1, 1]
+                    }
+                  ],
+                  removedObjects: [],
+                  pointCloudUrl: null,
+                  pcStats: null,
+                  roomAnalysis: room.roomAnalysis
+                };
+              });
+
+              const customHouse = {
+                name: 'Stitched House Layout',
+                rooms: customRooms,
+                connections: backendResponse.connections,
+                currentRoomId: 'whole_house'
+              };
+
+              setActiveHouse(customHouse);
+              setSceneType('house');
+              setSceneLoaded(true);
+              setProcessState('READY');
+            }
+          } catch (e) {
+            console.error(e);
+            alert('Error loading stitched house: ' + e.message);
+            setProcessState('ERROR');
+          }
+        } else {
+          alert('Backend processing failed: ' + (backendResponse?.error || 'Unknown error'));
+          setProcessState('ERROR');
+        }
+      }
+    }, 1000);
+  };
+
+  const handleLoadProject = (projKey) => {
+    if (projKey === 'apartment') {
+      handleUploadFullHouse([], []);
+    } else if (projKey === 'villa') {
+      const villaHouse = {
+        name: 'Luxury Villa',
+        rooms: [
+          {
+            room_id: 'living_room',
+            room_name: 'Great Room',
+            offset: [0, 0, 0],
+            room: {
+              dimensions: { width: 8.5, length: 11.5, height: 3.4 },
+              floor: { size: [8.5, 0.04, 11.5], position: [0,0,0], color: '#f5ece2', material: 'marble' },
+              walls: [
+                { id: 'back_wall', position: [0, 1.7, -5.75], size: [8.5, 3.4, 0.04], color: '#faebd7' },
+                { id: 'left_wall', position: [-4.25, 1.7, 0], size: [0.04, 3.4, 11.5], color: '#faebd7' },
+                { id: 'right_wall', position: [4.25, 1.7, 0], size: [0.04, 3.4, 11.5], color: '#faebd7' }
+              ]
+            },
+            furniture: [
+              { id: 'sofa_v', name: 'Luxury Sectional Sofa', type: 'Sofa', category: 'floor', position: [-1, 0.45, -2], rotation: [0, 0, 0], scale: [1, 1, 1], size: [2.5, 0.9, 1.2], color: '#bfa889', material: 'velvet', detected: true, originalPosition: [-1, 0.45, -2], originalRotation: [0, 0, 0], originalScale: [1,1,1] },
+              { id: 'plant_v', name: 'Fiddle Leaf Fig', type: 'Plant', category: 'floor', position: [3, 0.53, -4], rotation: [0, 0, 0], scale: [1, 1, 1], size: [0.8, 1.06, 0.8], color: '#22c55e', material: 'matte', detected: true, originalPosition: [3, 0.53, -4], originalRotation: [0, 0, 0], originalScale: [1,1,1] }
+            ]
+          },
+          {
+            room_id: 'bedroom',
+            room_name: 'Master Suite',
+            offset: [-7.85, 0, 0],
+            room: {
+              dimensions: { width: 7.2, length: 8.8, height: 3.1 },
+              floor: { size: [7.2, 0.04, 8.8], position: [0,0,0], color: '#cbd5e1', material: 'carpet' },
+              walls: [
+                { id: 'back_wall', position: [0, 1.55, -4.4], size: [7.2, 3.1, 0.04], color: '#faebd7' },
+                { id: 'left_wall', position: [-3.6, 1.55, 0], size: [0.04, 3.1, 8.8], color: '#faebd7' },
+                { id: 'right_wall', position: [3.6, 1.55, 0], size: [0.04, 3.1, 8.8], color: '#faebd7' }
+              ]
+            },
+            furniture: [
+              { id: 'bed_v', name: 'King Bed', type: 'KingBed', category: 'floor', position: [0.5, 0.625, -1], rotation: [0, 0, 0], scale: [1, 1, 1], size: [2.02, 1.25, 2.29], color: '#ded3c3', material: 'fabric', detected: true, originalPosition: [0.5, 0.625, -1], originalRotation: [0, 0, 0], originalScale: [1,1,1] }
+            ]
+          }
+        ],
+        connections: [{ from: 'living_room', to: 'bedroom' }],
+        currentRoomId: 'whole_house'
+      };
+      setActiveHouse(villaHouse);
+      setSceneType('house');
+      setSceneLoaded(true);
+      setProcessState('READY');
+    } else if (projKey === 'office') {
+      const officeHouse = {
+        name: 'Office Layout',
+        rooms: [
+          {
+            room_id: 'office_main',
+            room_name: 'Co-working Office',
+            offset: [0, 0, 0],
+            room: {
+              dimensions: { width: 8.0, length: 8.0, height: 3.0 },
+              floor: { size: [8.0, 0.04, 8.0], position: [0,0,0], color: '#64748b', material: 'concrete' },
+              walls: [
+                { id: 'back_wall', position: [0, 1.5, -4.0], size: [8.0, 3.0, 0.04], color: '#cbd5e1' },
+                { id: 'left_wall', position: [-4, 1.5, 0], size: [0.04, 3.0, 8.0], color: '#cbd5e1' },
+                { id: 'right_wall', position: [4, 1.5, 0], size: [0.04, 3.0, 8.0], color: '#cbd5e1' }
+              ]
+            },
+            furniture: [
+              { id: 'desk_o', name: 'Executive Desk', type: 'Desk', category: 'floor', position: [0, 0.39, -1], rotation: [0, 0, 0], scale: [1, 1, 1], size: [1.4, 0.785, 0.7], color: '#111111', material: 'wood', detected: true, originalPosition: [0, 0.39, -1], originalRotation: [0, 0, 0], originalScale: [1,1,1] },
+              { id: 'chair_o', name: 'Ergonomic Office Chair', type: 'Chair', category: 'floor', position: [0, 0.58, -2], rotation: [0, Math.PI, 0], scale: [1, 1, 1], size: [0.6, 1.16, 0.6], color: '#000000', material: 'plastic', detected: true, originalPosition: [0, 0.58, -2], originalRotation: [0, Math.PI, 0], originalScale: [1,1,1] }
+            ]
+          }
+        ],
+        connections: [],
+        currentRoomId: 'office_main'
+      };
+      setActiveHouse(officeHouse);
+      setSceneType('house');
+      setSceneLoaded(true);
+      setProcessState('READY');
+    }
+  };
+
+  const handleSwitchRoom = (roomId) => {
+    setActiveHouse(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        currentRoomId: roomId
+      };
+    });
+  };
+
+  const handleCreateEmptyHouse = (emptyHouseData) => {
+    setShowEmptyHouseModal(false);
+    if (demoTimerRef.current) {
+      clearInterval(demoTimerRef.current);
+      demoTimerRef.current = null;
+    }
+    setPendingDemoScene(null);
+    setSceneFurniture([]);
+    setSelectedId(null);
+    setSceneLoaded(true);
+    setPcStats(null);
+    setSessionStats(null);
+    setPointCloudUrl(null);
+    setObjectsUrl(null);
+    setRemovedObjects([]);
+    
+    setSessionId(`empty_house_${Date.now()}`);
+    setIsMultiRoom(true);
+    setActiveHouse(emptyHouseData);
+    setSceneType('house');
+    setProcessState('READY');
+  };
+
+  const handleLoadSavedProject = () => {
+    const saved = localStorage.getItem('miniscene_layout');
+    if (!saved) {
+      alert('No saved project found in local storage.');
+      return;
+    }
+    try {
+      const data = JSON.parse(saved);
+      if (data.activeHouse) {
+        setActiveHouse(data.activeHouse);
+      }
+      if (data.sceneFurniture) {
+        setSceneFurniture(data.sceneFurniture);
+      }
+      if (data.sceneType) {
+        setSceneType(data.sceneType);
+      }
+      if (data.sessionId) {
+        setSessionId(data.sessionId);
+      }
+      setIsMultiRoom(data.activeHouse !== null);
+      setProcessState('READY');
+      setSceneLoaded(true);
+      alert('Project layout loaded successfully!');
+    } catch (e) {
+      console.error(e);
+      alert('Failed to parse saved layout.');
+    }
+  };
+
+  const handleExportFormat = (format) => {
+    setShowExportModal(false);
+    
+    let filename = '';
+    let content = '';
+    let mimeType = 'text/plain';
+
+    const rooms = activeHouse ? activeHouse.rooms : [{
+      room_name: 'Room',
+      offset: [0, 0, 0],
+      room: demoSceneData?.room,
+      furniture: sceneFurniture
+    }];
+
+    if (format === 'json') {
+      filename = `${activeHouse?.name || 'miniscene'}_layout.json`;
+      mimeType = 'application/json';
+      content = JSON.stringify(activeHouse || {
+        name: 'Single Room',
+        rooms: [{
+          room_id: 'room_1',
+          room_name: 'Room 1',
+          offset: [0, 0, 0],
+          room: demoSceneData?.room,
+          furniture: sceneFurniture
+        }],
+        connections: []
+      }, null, 2);
+    } 
+    else if (format === 'blender') {
+      filename = `${activeHouse?.name || 'miniscene'}_blender_import.py`;
+      mimeType = 'text/x-python';
+      
+      let pyLines = [
+        "import bpy",
+        "# Clean up scene",
+        "if bpy.context.object:",
+        "    bpy.ops.object.mode_set(mode='OBJECT')",
+        "bpy.ops.object.select_all(action='SELECT')",
+        "bpy.ops.object.delete(use_global=False)",
+        "",
+        "def create_mesh_box(name, location, size, hex_color):",
+        "    # Add a cube",
+        "    bpy.ops.mesh.primitive_cube_add(size=1.0, location=location)",
+        "    obj = bpy.context.active_object",
+        "    obj.name = name",
+        "    obj.scale = size",
+        "    ",
+        "    # Convert hex to RGB",
+        "    hex_color = hex_color.lstrip('#')",
+        "    r = int(hex_color[0:2], 16) / 255.0",
+        "    g = int(hex_color[2:4], 16) / 255.0",
+        "    b = int(hex_color[4:6], 16) / 255.0",
+        "    ",
+        "    # Add Material",
+        "    mat = bpy.data.materials.new(name=name + '_mat')",
+        "    mat.use_nodes = True",
+        "    nodes = mat.node_tree.nodes",
+        "    principled = nodes.get('Principled BSDF')",
+        "    if principled:",
+        "        principled.inputs[0].default_value = (r, g, b, 1.0)",
+        "    obj.data.materials.append(mat)",
+        "    return obj",
+        ""
+      ];
+
+      rooms.forEach(room => {
+        const offset = room.offset || [0, 0, 0];
+        const rName = room.room_name.replace(/\s+/g, '_');
+        
+        if (room.room?.dimensions) {
+          const { width, length } = room.room.dimensions;
+          pyLines.push(`create_mesh_box("${rName}_Floor", (${offset[0]}, ${offset[1] - 0.02}, ${offset[2]}), (${width}, 0.04, ${length}), "#6b7280")`);
+        }
+        
+        if (room.room?.walls) {
+          room.room.walls.forEach(w => {
+            const wPos = [w.position[0] + offset[0], w.position[1] + offset[1], w.position[2] + offset[2]];
+            pyLines.push(`create_mesh_box("${rName}_Wall", (${wPos[0]}, ${wPos[1]}, ${wPos[2]}), (${w.size[0]}, ${w.size[1]}, ${w.size[2]}), "#d1d5db")`);
+          });
+        }
+
+        const furniture = room.furniture || [];
+        furniture.forEach(item => {
+          const pos = item.position;
+          const globalPos = [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]];
+          const size = item.size || [1.0, 1.0, 1.0];
+          const color = item.color || '#6366f1';
+          pyLines.push(`create_mesh_box("${item.type}_${item.id}", (${globalPos[0]}, ${globalPos[1]}, ${globalPos[2]}), (${size[0]}, ${size[1]}, ${size[2]}), "${color}")`);
+        });
+      });
+
+      content = pyLines.join('\n');
+    }
+    else if (format === 'obj') {
+      filename = `${activeHouse?.name || 'miniscene'}_scene.obj`;
+      mimeType = 'text/plain';
+      
+      let objLines = [
+        `# Wavefront OBJ exported from MiniScene AI`,
+        `# Material Count: 1`,
+        `mtllib scene.mtl`,
+        `g room_walls_floor`
+      ];
+
+      let vCount = 1;
+      const addBoxToObj = (name, center, size) => {
+        const [cx, cy, cz] = center;
+        const [w, h, d] = size;
+        const hx = w / 2, hy = h / 2, hz = d / 2;
+
+        objLines.push(
+          `# ${name}`,
+          `v ${cx - hx} ${cy - hy} ${cz - hz}`,
+          `v ${cx + hx} ${cy - hy} ${cz - hz}`,
+          `v ${cx + hx} ${cy + hy} ${cz - hz}`,
+          `v ${cx - hx} ${cy + hy} ${cz - hz}`,
+          `v ${cx - hx} ${cy - hy} ${cz + hz}`,
+          `v ${cx + hx} ${cy - hy} ${cz + hz}`,
+          `v ${cx + hx} ${cy + hy} ${cz + hz}`,
+          `v ${cx - hx} ${cy + hy} ${cz + hz}`,
+          `f ${vCount} ${vCount+1} ${vCount+2} ${vCount+3}`,
+          `f ${vCount+4} ${vCount+7} ${vCount+6} ${vCount+5}`,
+          `f ${vCount} ${vCount+3} ${vCount+7} ${vCount+4}`,
+          `f ${vCount+1} ${vCount+5} ${vCount+6} ${vCount+2}`,
+          `f ${vCount+3} ${vCount+2} ${vCount+6} ${vCount+7}`,
+          `f ${vCount} ${vCount+4} ${vCount+5} ${vCount+1}`
+        );
+        vCount += 8;
+      };
+
+      rooms.forEach(room => {
+        const offset = room.offset || [0, 0, 0];
+        if (room.room?.dimensions) {
+          addBoxToObj(`${room.room_name}_Floor`, [offset[0], offset[1] - 0.02, offset[2]], [room.room.dimensions.width, 0.04, room.room.dimensions.length]);
+        }
+        if (room.room?.walls) {
+          room.room.walls.forEach(w => {
+            addBoxToObj(`${room.room_name}_Wall`, [w.position[0] + offset[0], w.position[1] + offset[1], w.position[2] + offset[2]], w.size);
+          });
+        }
+        (room.furniture || []).forEach(f => {
+          addBoxToObj(`${f.type}_${f.id}`, [f.position[0] + offset[0], f.position[1] + offset[1], f.position[2] + offset[2]], f.size || [1.0, 1.0, 1.0]);
+        });
+      });
+
+      content = objLines.join('\n');
+    }
+    else if (format === 'gltf') {
+      filename = `${activeHouse?.name || 'miniscene'}_scene.gltf`;
+      mimeType = 'application/json';
+
+      const nodes = [];
+      const scenes = [{ nodes: [] }];
+      
+      let nodeIdx = 0;
+      rooms.forEach(room => {
+        const offset = room.offset || [0, 0, 0];
+        nodes.push({
+          name: room.room_name,
+          translation: offset,
+          children: []
+        });
+        const roomRootIdx = nodeIdx++;
+        scenes[0].nodes.push(roomRootIdx);
+
+        if (room.room?.dimensions) {
+          nodes.push({
+            name: 'Floor',
+            scale: [room.room.dimensions.width, 0.04, room.room.dimensions.length]
+          });
+          nodes[roomRootIdx].children.push(nodeIdx++);
+        }
+
+        (room.furniture || []).forEach(f => {
+          nodes.push({
+            name: `${f.type}_${f.name}`,
+            translation: f.position,
+            rotation: [0, Math.sin(f.rotation[1]/2), 0, Math.cos(f.rotation[1]/2)],
+            scale: f.size || [1.0, 1.0, 1.0]
+          });
+          nodes[roomRootIdx].children.push(nodeIdx++);
+        });
+      });
+
+      const gltfObj = {
+        asset: { generator: "MiniScene AI GLTF Exporter", version: "2.0" },
+        scene: 0,
+        scenes,
+        nodes
+      };
+      content = JSON.stringify(gltfObj, null, 2);
+    }
+    else if (format === 'fbx') {
+      filename = `${activeHouse?.name || 'miniscene'}_scene.fbx`;
+      mimeType = 'text/plain';
+      
+      let fbxLines = [
+        `; FBX 7.4.0 project export from MiniScene AI`,
+        `FBXHeaderExtension: {`,
+        `    FBXVersion: 7400`,
+        `}`,
+        `Objects: {`,
+      ];
+      rooms.forEach(room => {
+        const offset = room.offset || [0, 0, 0];
+        fbxLines.push(
+          `    Model: "Model::${room.room_name}", "Null" {`,
+          `        Version: 232`,
+          `        Properties70: {`,
+          `            P: "Lcl Translation", "Lcl Translation", "", "A", ${offset[0]}, ${offset[1]}, ${offset[2]}`,
+          `        }`,
+          `    }`
+        );
+        (room.furniture || []).forEach(f => {
+          fbxLines.push(
+            `    Model: "Model::${f.type}_${f.id}", "Mesh" {`,
+            `        Version: 232`,
+            `        Properties70: {`,
+            `            P: "Lcl Translation", "Lcl Translation", "", "A", ${f.position[0]}, ${f.position[1]}, ${f.position[2]}`,
+            `            P: "Lcl Rotation", "Lcl Rotation", "", "A", 0, ${f.rotation[1] * 180 / Math.PI}, 0`,
+            `        }`,
+            `    }`
+          );
+        });
+      });
+      fbxLines.push(`}`);
+      content = fbxLines.join('\n');
+    }
+
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleApplyTheme = (themeKey, target) => {
+    const theme = {
+      modern: { wallColor: '#e2e8f0', floorMaterial: 'concrete', floorColor: '#94a3b8', color: '#1f2937' },
+      luxury: { wallColor: '#faebd7', floorMaterial: 'marble', floorColor: '#ded3c3', color: '#bfa889' },
+      minimal: { wallColor: '#f8fafc', floorMaterial: 'concrete', floorColor: '#cbd5e1', color: '#0f172a' },
+      scandinavian: { wallColor: '#f1f5f9', floorMaterial: 'wood', floorColor: '#b98f65', color: '#475569' },
+      japanese: { wallColor: '#fafaf9', floorMaterial: 'wood', floorColor: '#e8d8c8', color: '#78716c' },
+      industrial: { wallColor: '#cbd5e1', floorMaterial: 'concrete', floorColor: '#64748b', color: '#1e1b4b' },
+      contemporary: { wallColor: '#f5ece2', floorMaterial: 'wood', floorColor: '#7a4e31', color: '#1e3a8a' }
+    }[themeKey];
+
+    if (!theme || !activeHouse) return;
+
+    setActiveHouse(prev => {
+      if (!prev) return prev;
+      const activeRoomId = prev.currentRoomId;
+      
+      const updatedRooms = prev.rooms.map(room => {
+        if (target === 'house' || room.room_id === activeRoomId || (activeRoomId === 'whole_house' && prev.rooms.length === 1)) {
+          const newRoom = { ...room.room };
+          const { width, length, height } = newRoom.dimensions;
+          
+          newRoom.floor = {
+            ...newRoom.floor,
+            color: theme.floorColor,
+            material: theme.floorMaterial,
+          };
+          
+          newRoom.walls = [
+            { id: "back_wall", position: [0, height / 2, -length / 2], size: [width, height, 0.02], color: theme.wallColor },
+            { id: "left_wall", position: [-width / 2, height / 2, 0], size: [0.02, height, length], color: theme.wallColor },
+            { id: "right_wall", position: [width / 2, height / 2, 0], size: [0.02, height, length], color: theme.wallColor }
+          ];
+
+          const updatedFurniture = (room.furniture || []).map(f => ({
+            ...f,
+            color: theme.color,
+            primaryColor: theme.color,
+            secondaryColor: theme.color,
+            accentColor: theme.color
+          }));
+
+          return {
+            ...room,
+            room: newRoom,
+            furniture: updatedFurniture
+          };
+        }
+        return room;
+      });
+      return { ...prev, rooms: updatedRooms };
+    });
+  };
+
   const handleCreateScratchRoom = (config) => {
     const { roomType, width, length, height, wallColor, floorColor, floorMaterial, includeCeiling } = config;
     const sceneJson = {
@@ -1280,7 +2128,8 @@ function App() {
       />
 
       {/* Left sidebar — Design Panel */}
-      <div className="glass-panel">
+      {!presentationMode && hasScene && (
+        <div className="glass-panel">
         {/* Branding */}
         <div className="header">
           <h1>MiniScene AI</h1>
@@ -1421,6 +2270,154 @@ function App() {
           )}
         </div>
 
+        {/* Room Navigator Sidebar Section */}
+        {hasScene && activeHouse && (
+          <div style={{ padding: '14px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Room Navigator</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <button
+                onClick={() => handleSwitchRoom('whole_house')}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  background: activeHouse.currentRoomId === 'whole_house' ? 'rgba(6,182,212,0.15)' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${activeHouse.currentRoomId === 'whole_house' ? 'var(--teal)' : 'var(--border)'}`,
+                  color: activeHouse.currentRoomId === 'whole_house' ? 'var(--teal)' : 'var(--text-main)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  fontSize: '0.82rem',
+                  fontWeight: 600,
+                  width: '100%',
+                  textAlign: 'left'
+                }}
+              >
+                🏠 Whole House
+              </button>
+              {activeHouse.rooms.map(room => {
+                const isSelected = activeHouse.currentRoomId === room.room_id;
+                const icon = {
+                  living_room: '🛋️',
+                  bedroom: '🛏️',
+                  kitchen: '🍳',
+                  dining_room: '🪵',
+                  office: '💻',
+                  bathroom: '🚰',
+                  balcony: '🌿',
+                  hallway: '🚪',
+                }[room.room_id.split('_')[0]] || '🚪';
+
+                return (
+                  <button
+                    key={room.room_id}
+                    onClick={() => handleSwitchRoom(room.room_id)}
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: 8,
+                      background: isSelected ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.02)',
+                      border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+                      color: isSelected ? 'var(--accent)' : 'var(--text-main)',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      fontSize: '0.82rem',
+                      fontWeight: isSelected ? 600 : 400,
+                      width: '100%',
+                      textAlign: 'left',
+                      paddingLeft: 20
+                    }}
+                  >
+                    <span>{icon}</span>
+                    <span>{room.room_name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* AI Interior Themes */}
+        {hasScene && activeHouse && (
+          <div style={{ padding: '14px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>AI Interior Themes</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
+              {[
+                { key: 'scandinavian', name: 'Scandinavian', emoji: '🌲' },
+                { key: 'luxury', name: 'Luxury Marble', emoji: '👑' },
+                { key: 'minimal', name: 'Minimalist', emoji: '◽' },
+                { key: 'modern', name: 'Modern Slate', emoji: '📐' },
+                { key: 'japanese', name: 'Zen Wooden', emoji: '🎋' },
+                { key: 'industrial', name: 'Industrial', emoji: '🏭' },
+                { key: 'contemporary', name: 'Contemporary', emoji: '🎨' },
+              ].map(theme => (
+                <button
+                  key={theme.key}
+                  onClick={() => handleApplyTheme(theme.key, 'house')}
+                  style={{
+                    padding: '6px 8px',
+                    borderRadius: 6,
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-main)',
+                    fontSize: '0.75rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    justifyContent: 'center',
+                    transition: 'all 0.2s'
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--teal)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
+                >
+                  <span>{theme.emoji}</span>
+                  <span>{theme.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Project Manager Section */}
+        {hasScene && (
+          <div style={{ padding: '14px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Project Manager</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <button
+                className="btn-primary"
+                style={{ fontSize: '0.78rem', padding: '8px', justifyContent: 'center', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)' }}
+                onClick={handleSave}
+              >
+                💾 Save Layout
+              </button>
+              <button
+                className="btn-primary"
+                style={{ fontSize: '0.78rem', padding: '8px', justifyContent: 'center', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)' }}
+                onClick={handleLoadSavedProject}
+              >
+                📂 Load Saved
+              </button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Presets:</span>
+              <select
+                onChange={(e) => {
+                  if (e.target.value) handleLoadProject(e.target.value);
+                }}
+                defaultValue=""
+                style={{ background: '#0e121c', color: 'white', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: '0.75rem', outline: 'none', flex: 1 }}
+              >
+                <option value="" disabled>-- Select Preset --</option>
+                <option value="apartment">My Apartment</option>
+                <option value="villa">Luxury Villa</option>
+                <option value="office">Office Layout</option>
+              </select>
+            </div>
+          </div>
+        )}
+
         {/* Bottom actions */}
         <div style={{ padding: 12, borderTop: '1px solid var(--border)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
           <button
@@ -1433,12 +2430,13 @@ function App() {
           <button
             className="action-btn"
             style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)', color: 'var(--text-main)', fontSize: '0.82rem', padding: '8px', gap: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            onClick={handleExport}
+            onClick={() => setShowExportModal(true)}
           >
             <Download size={15} /> Export
           </button>
         </div>
       </div>
+      )}
 
       {/* 3D Canvas */}
       <div className="canvas-container" style={{
@@ -1448,9 +2446,14 @@ function App() {
         {/* Landing hero — shown when no scene */}
         {!hasScene && !isProcessing && (
           <LandingHero
-            onUpload={() => setShowVideoUpload(true)}
-            onCreateScratch={() => setShowCreateScratchModal(true)}
+            onUploadSingle={() => setShowVideoUpload(true)}
+            onUploadFullHouse={() => setShowMultiVideoUpload(true)}
+            onCreateEmptyHouse={() => setShowEmptyHouseModal(true)}
           />
+        )}
+
+        {hasScene && activeHouse && !presentationMode && (
+          <Minimap activeHouse={activeHouse} />
         )}
 
         {/* Scene Ready Banner */}
@@ -1519,160 +2522,226 @@ function App() {
                 !(typeof process !== 'undefined' && process.env?.NODE_ENV === 'production' || import.meta.env?.PROD || import.meta.env?.MODE === 'production')
               }
               compareOriginal={compareOriginal}
+              activeHouse={activeHouse}
+              presentationMode={presentationMode}
             />
           </CanvasErrorBoundary>
         )}
 
         {/* ─── Primary Toolbar ─── */}
-        <div className="controls-overlay glass">
-          {/* Upload */}
-          <button
-            className="btn-primary"
-            style={{ background: 'var(--teal)', color: 'white', border: 'none' }}
-            onClick={() => setShowVideoUpload(true)}
-          >
-            <Film size={17} /> Upload Video
-          </button>
-
-          <div className="toolbar-divider" />
-
-          {/* Add Furniture */}
-          <button
-            className="btn-primary"
-            style={{ background: hasScene ? 'var(--accent)' : 'rgba(255,255,255,0.07)', border: '1px solid var(--border)' }}
-            onClick={() => setShowLibrary(true)}
-          >
-            <Plus size={17} /> Add Furniture
-          </button>
-
-          {hasScene && (
-            <>
-              <div className="toolbar-divider" />
-              {/* Compare Original */}
-              <button
-                className="btn-primary"
-                style={{
-                  background: compareOriginal ? 'rgba(6,182,212,0.2)' : 'transparent',
-                  border: `1px solid ${compareOriginal ? 'var(--teal)' : 'var(--border)'}`,
-                  color: compareOriginal ? 'var(--teal)' : 'var(--text-main)',
-                }}
-                onClick={() => setCompareOriginal(prev => !prev)}
-                title="Compare current layout with original layout"
-              >
-                <Sliders size={17} /> Compare Original
-              </button>
-
-              <div className="toolbar-divider" />
-              {/* Room Settings */}
-              <button
-                className="btn-primary"
-                style={{ background: showRoomSettings ? 'rgba(255,255,255,0.12)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-                onClick={() => setShowRoomSettings(s => !s)}
-                title="Room settings and dimensions"
-              >
-                <Sliders size={17} /> Room Settings
-              </button>
-
-              <div className="toolbar-divider" />
-              {/* Save */}
-              <button
-                className="btn-primary"
-                style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-                onClick={handleSave}
-              >
-                <Save size={17} /> Save
-              </button>
-              {/* Export */}
-              <button
-                className="btn-primary"
-                style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-                onClick={handleExport}
-              >
-                <Download size={17} /> Export
-              </button>
-            </>
-          )}
-
-          <div className="toolbar-divider" />
-
-          {/* Camera modes */}
-          <button
-            className="btn-primary"
-            style={{ background: cameraMode === 'orbit' ? 'rgba(255,255,255,0.12)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-            onClick={() => setCameraMode('orbit')}
-          >
-            <Camera size={17} /> Orbit
-          </button>
-          <button
-            className="btn-primary"
-            style={{ background: cameraMode === 'walk' ? 'rgba(6,182,212,0.2)' : 'transparent', border: `1px solid ${cameraMode === 'walk' ? 'var(--teal)' : 'var(--border)'}`, color: cameraMode === 'walk' ? 'var(--teal)' : 'var(--text-main)' }}
-            onClick={() => setCameraMode('walk')}
-          >
-            <Footprints size={17} /> Walk
-          </button>
-
-          <div className="toolbar-divider" />
-
-          {/* Fit Scene */}
-          <button
-            className="btn-primary"
-            style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-            onClick={() => setFitTrigger(f => f + 1)}
-            title="Fit scene to camera"
-          >
-            <Camera size={17} />
-          </button>
-
-          {/* View Settings */}
-          <button
-            className="btn-primary"
-            style={{ background: showViewSettings ? 'rgba(255,255,255,0.1)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-            onClick={() => setShowViewSettings(s => !s)}
-          >
-            <Settings2 size={17} />
-          </button>
-
-          {/* CV Pipeline */}
-          <button
-            className="btn-primary"
-            style={{ background: showCVPanel ? 'rgba(236,72,153,0.15)' : 'transparent', border: `1px solid ${showCVPanel ? 'rgba(236,72,153,0.5)' : 'var(--border)'}`, color: showCVPanel ? '#f472b6' : 'var(--text-muted)' }}
-            onClick={() => setShowCVPanel(s => !s)}
-            title="How this scene was built"
-          >
-            <Layers size={17} /> CV
-          </button>
-
-          <div className="toolbar-divider" />
-
-          {/* More menu */}
-          <div style={{ position: 'relative' }}>
+        {hasScene && !presentationMode ? (
+          <div className="controls-overlay glass">
+            {/* Upload */}
             <button
               className="btn-primary"
-              style={{ background: showMoreMenu ? 'rgba(255,255,255,0.1)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
-              onClick={() => setShowMoreMenu(m => !m)}
+              style={{ background: 'var(--teal)', color: 'white', border: 'none' }}
+              onClick={() => setShowVideoUpload(true)}
             >
-              <MoreHorizontal size={17} /> More
+              <Film size={17} /> Upload Video
             </button>
-            {showMoreMenu && (
-              <div style={{ position: 'absolute', bottom: '110%', right: 0, background: 'rgba(14,18,28,0.97)', border: '1px solid var(--border)', borderRadius: 12, padding: 8, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
-                {[
-                  { label: 'Semantics', icon: <Activity size={15} />, key: 'semantic', set: setShowSemanticPanel, val: showSemanticPanel, color: '#a78bfa' },
-                  { label: 'Measure', icon: <Ruler size={15} />, key: 'measurement', set: setShowMeasurementPanel, val: showMeasurementPanel, color: '#06b6d4' },
-                  { label: 'Assistant', icon: <Sparkles size={15} />, key: 'assistant', set: setShowAssistantPanel, val: showAssistantPanel, color: '#f59e0b' },
-                  { label: 'Scene Graph', icon: <Network size={15} />, key: 'graph', set: setShowGraphPanel, val: showGraphPanel, color: '#ec4899' },
-                  { label: 'Walkable', icon: <Map size={15} />, key: 'walkable', set: setShowWalkablePanel, val: showWalkablePanel, color: '#22c55e' },
-                ].map(item => (
-                  <button key={item.key}
-                    onClick={() => { item.set(v => !v); setShowMoreMenu(false); }}
-                    style={{ padding: '8px 12px', background: item.val ? `${item.color}18` : 'transparent', border: `1px solid ${item.val ? item.color + '44' : 'transparent'}`, borderRadius: 8, color: item.val ? item.color : 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.82rem', width: '100%', textAlign: 'left' }}
-                  >
-                    {item.icon}{item.label}
-                  </button>
-                ))}
-              </div>
+
+            <div className="toolbar-divider" />
+
+            {/* Add Furniture */}
+            <button
+              className="btn-primary"
+              style={{ background: hasScene ? 'var(--accent)' : 'rgba(255,255,255,0.07)', border: '1px solid var(--border)' }}
+              onClick={() => setShowLibrary(true)}
+            >
+              <Plus size={17} /> Add Furniture
+            </button>
+
+            {hasScene && (
+              <>
+                <div className="toolbar-divider" />
+                {/* Compare Original */}
+                <button
+                  className="btn-primary"
+                  style={{
+                    background: compareOriginal ? 'rgba(6,182,212,0.2)' : 'transparent',
+                    border: `1px solid ${compareOriginal ? 'var(--teal)' : 'var(--border)'}`,
+                    color: compareOriginal ? 'var(--teal)' : 'var(--text-main)',
+                  }}
+                  onClick={() => setCompareOriginal(prev => !prev)}
+                  title="Compare current layout with original layout"
+                >
+                  <Sliders size={17} /> Compare Original
+                </button>
+
+                <div className="toolbar-divider" />
+                {/* Room Settings */}
+                <button
+                  className="btn-primary"
+                  style={{ background: showRoomSettings ? 'rgba(255,255,255,0.12)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+                  onClick={() => setShowRoomSettings(s => !s)}
+                  title="Room settings and dimensions"
+                >
+                  <Sliders size={17} /> Room Settings
+                </button>
+
+                <div className="toolbar-divider" />
+                {/* Save */}
+                <button
+                  className="btn-primary"
+                  style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+                  onClick={handleSave}
+                >
+                  <Save size={17} /> Save
+                </button>
+                {/* Export */}
+                <button
+                  className="btn-primary"
+                  style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+                  onClick={() => setShowExportModal(true)}
+                >
+                  <Download size={17} /> Export
+                </button>
+              </>
             )}
+
+            <div className="toolbar-divider" />
+
+            {/* Camera modes */}
+            <button
+              className="btn-primary"
+              style={{ background: cameraMode === 'orbit' ? 'rgba(255,255,255,0.12)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+              onClick={() => setCameraMode('orbit')}
+            >
+              <Camera size={17} /> Orbit
+            </button>
+            <button
+              className="btn-primary"
+              style={{ background: cameraMode === 'walk' ? 'rgba(6,182,212,0.2)' : 'transparent', border: `1px solid ${cameraMode === 'walk' ? 'var(--teal)' : 'var(--border)'}`, color: cameraMode === 'walk' ? 'var(--teal)' : 'var(--text-main)' }}
+              onClick={() => setCameraMode('walk')}
+            >
+              <Footprints size={17} /> Walk
+            </button>
+
+            {hasScene && activeHouse && (
+              <>
+                <div className="toolbar-divider" />
+                {/* Floor Plan */}
+                <button
+                  className="btn-primary"
+                  style={{
+                    background: currentView === 'floorplan' ? 'rgba(6,182,212,0.2)' : 'transparent',
+                    border: `1px solid ${currentView === 'floorplan' ? 'var(--teal)' : 'var(--border)'}`,
+                    color: currentView === 'floorplan' ? 'var(--teal)' : 'var(--text-main)',
+                  }}
+                  onClick={() => setCurrentView(prev => prev === '3d' ? 'floorplan' : '3d')}
+                  title="View 2D CAD Floor Plan Layout"
+                >
+                  📐 Floor Plan
+                </button>
+              </>
+            )}
+
+            {hasScene && (
+              <>
+                <div className="toolbar-divider" />
+                {/* Presentation Mode */}
+                <button
+                  className="btn-primary"
+                  style={{
+                    background: presentationMode ? 'rgba(6,182,212,0.2)' : 'transparent',
+                    border: `1px solid ${presentationMode ? 'var(--teal)' : 'var(--border)'}`,
+                    color: presentationMode ? 'var(--teal)' : 'var(--text-main)',
+                  }}
+                  onClick={() => setPresentationMode(prev => !prev)}
+                  title="Toggle Presentation Mode (Hides labels and debug elements)"
+                >
+                  🎭 Presentation
+                </button>
+              </>
+            )}
+
+            <div className="toolbar-divider" />
+
+            {/* Fit Scene */}
+            <button
+              className="btn-primary"
+              style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+              onClick={() => setFitTrigger(f => f + 1)}
+              title="Fit scene to camera"
+            >
+              <Camera size={17} />
+            </button>
+
+            {/* View Settings */}
+            <button
+              className="btn-primary"
+              style={{ background: showViewSettings ? 'rgba(255,255,255,0.1)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+              onClick={() => setShowViewSettings(s => !s)}
+            >
+              <Settings2 size={17} />
+            </button>
+
+            {/* CV Pipeline */}
+            <button
+              className="btn-primary"
+              style={{ background: showCVPanel ? 'rgba(236,72,153,0.15)' : 'transparent', border: `1px solid ${showCVPanel ? 'rgba(236,72,153,0.5)' : 'var(--border)'}`, color: showCVPanel ? '#f472b6' : 'var(--text-muted)' }}
+              onClick={() => setShowCVPanel(s => !s)}
+              title="How this scene was built"
+            >
+              <Layers size={17} /> CV
+            </button>
+
+            <div className="toolbar-divider" />
+
+            {/* More menu */}
+            <div style={{ position: 'relative' }}>
+              <button
+                className="btn-primary"
+                style={{ background: showMoreMenu ? 'rgba(255,255,255,0.1)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+                onClick={() => setShowMoreMenu(m => !m)}
+              >
+                <MoreHorizontal size={17} /> More
+              </button>
+              {showMoreMenu && (
+                <div style={{ position: 'absolute', bottom: '110%', right: 0, background: 'rgba(14,18,28,0.97)', border: '1px solid var(--border)', borderRadius: 12, padding: 8, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
+                  {[
+                    { label: 'Semantics', icon: <Activity size={15} />, key: 'semantic', set: setShowSemanticPanel, val: showSemanticPanel, color: '#a78bfa' },
+                    { label: 'Measure', icon: <Ruler size={15} />, key: 'measurement', set: setShowMeasurementPanel, val: showMeasurementPanel, color: '#06b6d4' },
+                    { label: 'Assistant', icon: <Sparkles size={15} />, key: 'assistant', set: setShowAssistantPanel, val: showAssistantPanel, color: '#f59e0b' },
+                    { label: 'Scene Graph', icon: <Network size={15} />, key: 'graph', set: setShowGraphPanel, val: showGraphPanel, color: '#ec4899' },
+                    { label: 'Walkable', icon: <Map size={15} />, key: 'walkable', set: setShowWalkablePanel, val: showWalkablePanel, color: '#22c55e' },
+                  ].map(item => (
+                    <button key={item.key}
+                      onClick={() => { item.set(v => !v); setShowMoreMenu(false); }}
+                      style={{ padding: '8px 12px', background: item.val ? `${item.color}18` : 'transparent', border: `1px solid ${item.val ? item.color + '44' : 'transparent'}`, borderRadius: 8, color: item.val ? item.color : 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.82rem', width: '100%', textAlign: 'left' }}
+                    >
+                      {item.icon}{item.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        ) : hasScene && presentationMode ? (
+          <button
+            onClick={() => setPresentationMode(false)}
+            style={{
+              position: 'absolute',
+              bottom: 20,
+              right: 20,
+              zIndex: 100,
+              background: 'rgba(14,18,28,0.9)',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              padding: '8px 16px',
+              color: '#06b6d4',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: '0.8rem',
+              boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8
+            }}
+          >
+            🎭 Exit Presentation Mode
+          </button>
+        ) : null}
       </div>
 
       {/* ─── Overlays ─── */}
@@ -1776,6 +2845,77 @@ function App() {
             onSnapToWall={handleSnapToWall}
             onResetObject={handleResetObject}
           />
+        )}
+        {showMultiVideoUpload && (
+          <MultiVideoUpload
+            onUpload={handleUploadFullHouse}
+            onClose={() => setShowMultiVideoUpload(false)}
+          />
+        )}
+
+        {showEmptyHouseModal && (
+          <EmptyHouseModal
+            onCreate={handleCreateEmptyHouse}
+            onClose={() => setShowEmptyHouseModal(false)}
+          />
+        )}
+
+        {currentView === 'floorplan' && activeHouse && (
+          <FloorPlanPanel
+            activeHouse={activeHouse}
+            onClose={() => setCurrentView('3d')}
+          />
+        )}
+
+        {showExportModal && (
+          <div style={{
+            position: 'absolute', inset: 0, background: 'rgba(8,11,18,0.85)',
+            backdropFilter: 'blur(12px)', zIndex: 100,
+            display: 'flex', alignItems: 'center', justifyContent: 'center'
+          }}>
+            <div className="glass-panel" style={{ width: 440, padding: 24, borderRadius: 16, border: '1px solid rgba(6,182,212,0.3)', position: 'relative' }}>
+              <button onClick={() => setShowExportModal(false)} style={{ position: 'absolute', top: 16, right: 16, background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={20} /></button>
+              
+              <h2 style={{ fontSize: '1.1rem', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}><Download size={18} color="#06b6d4" /> Export Digital Twin</h2>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: 20 }}>Select a file format to download your 3D house scene layout.</p>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {[
+                  { key: 'json', name: 'JSON Scene Graph', desc: 'Metadata, wall boundaries, and placed catalog item IDs.', ext: '.json', color: '#06b6d4' },
+                  { key: 'blender', name: 'Blender Python Importer', desc: 'Runs inside Blender to script-recreate room walls and place meshes.', ext: '.py', color: '#f97316' },
+                  { key: 'gltf', name: 'glTF 3D Asset', desc: 'Standard 3D format containing hierarchy nodes and transforms.', ext: '.gltf', color: '#22c55e' },
+                  { key: 'obj', name: 'Wavefront OBJ Mesh', desc: 'Mesh file representing room layout geometry and static volumes.', ext: '.obj', color: '#a78bfa' },
+                  { key: 'fbx', name: 'Autodesk FBX Layout', desc: 'Exchange format for integration in Unity, Unreal, or 3ds Max.', ext: '.fbx', color: '#ec4899' },
+                ].map(fmt => (
+                  <button
+                    key={fmt.key}
+                    onClick={() => handleExportFormat(fmt.key)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: 12,
+                      background: 'rgba(255,255,255,0.02)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 10,
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      transition: 'all 0.2s',
+                      width: '100%'
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = fmt.color; e.currentTarget.style.background = `${fmt.color}05`; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.background = 'rgba(255,255,255,0.02)'; }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '0.82rem', color: 'var(--text-main)' }}>{fmt.name}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2 }}>{fmt.desc}</div>
+                    </div>
+                    <span style={{ fontSize: '0.7rem', background: 'rgba(255,255,255,0.08)', color: 'var(--text-muted)', padding: '2px 6px', borderRadius: 4, fontWeight: 700 }}>{fmt.ext}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
         )}
       </AnimatePresence>
 

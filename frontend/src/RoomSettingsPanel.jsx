@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { X, RefreshCw, Sliders } from 'lucide-react';
+import { X, Sliders, Sparkles, Check } from 'lucide-react';
 
 const FLOOR_MATERIALS = [
   { id: 'marble', label: 'Solid Marble', defaultColor: '#e2e8f0' },
@@ -10,8 +10,69 @@ const FLOOR_MATERIALS = [
   { id: 'concrete', label: 'Smooth Concrete', defaultColor: '#94a3b8' }
 ];
 
-export default function RoomSettingsPanel({ room, onUpdate, onClose }) {
+const THEMES = {
+  modern: {
+    label: 'Modern',
+    wallColor: '#e2e8f0',
+    floorMaterial: 'concrete',
+    floorColor: '#94a3b8',
+    color: '#1f2937',
+    desc: 'Cool tones, clean concrete surfaces, dark accents.'
+  },
+  luxury: {
+    label: 'Luxury',
+    wallColor: '#faebd7',
+    floorMaterial: 'marble',
+    floorColor: '#ded3c3',
+    color: '#bfa889',
+    desc: 'Polished marble, ivory walls, gold and brass details.'
+  },
+  minimal: {
+    label: 'Minimal',
+    wallColor: '#f8fafc',
+    floorMaterial: 'concrete',
+    floorColor: '#cbd5e1',
+    color: '#0f172a',
+    desc: 'Monochrome palettes, pure white walls, zero clutter.'
+  },
+  scandinavian: {
+    label: 'Scandinavian',
+    wallColor: '#f1f5f9',
+    floorMaterial: 'wood',
+    floorColor: '#b98f65',
+    color: '#475569',
+    desc: 'Light woods, warm textiles, calm white and grey tones.'
+  },
+  japanese: {
+    label: 'Japanese (Zen)',
+    wallColor: '#fafaf9',
+    floorMaterial: 'wood',
+    floorColor: '#e8d8c8',
+    color: '#78716c',
+    desc: 'Tatami style woods, warm ivory walls, dark wood accents.'
+  },
+  industrial: {
+    label: 'Industrial',
+    wallColor: '#cbd5e1',
+    floorMaterial: 'concrete',
+    floorColor: '#64748b',
+    color: '#1e1b4b',
+    desc: 'Slate grey walls, dark concrete, raw steel visual notes.'
+  },
+  contemporary: {
+    label: 'Contemporary',
+    wallColor: '#f5ece2',
+    floorMaterial: 'wood',
+    floorColor: '#7a4e31',
+    color: '#1e3a8a',
+    desc: 'Warm beige walls, deep walnut wood, bold navy accents.'
+  }
+};
+
+export default function RoomSettingsPanel({ room, onUpdate, onApplyTheme, onClose }) {
   if (!room) return null;
+
+  const [activeTheme, setActiveTheme] = useState(null);
 
   const width = room.dimensions?.width || 5.0;
   const length = room.dimensions?.length || 6.0;
@@ -30,6 +91,11 @@ export default function RoomSettingsPanel({ room, onUpdate, onClose }) {
       floorMaterial: matId,
       floorColor: matched ? matched.defaultColor : floorColor
     });
+  };
+
+  const triggerThemeApply = (themeKey, target) => {
+    onApplyTheme(themeKey, target);
+    setActiveTheme(null);
   };
 
   return (
@@ -168,6 +234,58 @@ export default function RoomSettingsPanel({ room, onUpdate, onClose }) {
               <option key={mat.id} value={mat.id}>{mat.label}</option>
             ))}
           </select>
+        </div>
+
+        <div style={{ margin: '4px 0', borderBottom: '1px solid var(--border)' }} />
+
+        {/* AI Interior Themes Selector */}
+        <div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 10 }}>
+            <Sparkles size={13} color="var(--accent)" /> AI Interior Themes
+          </label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {Object.entries(THEMES).map(([key, t]) => (
+              <div key={key} style={{ display: 'flex', flexDirection: 'column', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                <button
+                  type="button"
+                  onClick={() => setActiveTheme(activeTheme === key ? null : key)}
+                  style={{
+                    padding: '8px 12px', background: 'transparent', border: 'none', color: 'white', textAlign: 'left', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8
+                  }}
+                >
+                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: t.color }} />
+                  {t.label}
+                  <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 400, marginLeft: 'auto' }}>
+                    {activeTheme === key ? 'Hide' : 'Options'}
+                  </span>
+                </button>
+
+                {activeTheme === key && (
+                  <div style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.2)', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: '1.35', marginBottom: 4 }}>{t.desc}</p>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        onClick={() => triggerThemeApply(key, 'room')}
+                        style={{
+                          background: 'rgba(99, 102, 241, 0.15)', color: 'var(--accent)', border: '1px solid rgba(99, 102, 241, 0.25)', fontSize: '0.68rem', fontWeight: 700, padding: '4px 8px', borderRadius: 4, cursor: 'pointer', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4
+                        }}
+                      >
+                        <Check size={10} /> Apply to Room
+                      </button>
+                      <button
+                        onClick={() => triggerThemeApply(key, 'house')}
+                        style={{
+                          background: 'linear-gradient(135deg, #a78bfa, #8b5cf6)', color: 'white', border: 'none', fontSize: '0.68rem', fontWeight: 700, padding: '4px 8px', borderRadius: 4, cursor: 'pointer', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4
+                        }}
+                      >
+                        <Check size={10} /> Apply Entire House
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </motion.div>

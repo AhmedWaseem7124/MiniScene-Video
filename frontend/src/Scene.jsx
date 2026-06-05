@@ -832,7 +832,7 @@ function DetectedBoundingBox({ object, selected, onClick, viewSettings, shadowTe
 
 // ─── Walk Controls ─────────────────────────────────────────────────────────
 
-function WalkControls() {
+function WalkControls({ activeHouse }) {
   const { camera } = useThree();
   const keys = useRef({ w: false, a: false, s: false, d: false, q: false, e: false });
   const speed = 0.06;
@@ -849,12 +849,127 @@ function WalkControls() {
     const dir = new THREE.Vector3(); const right = new THREE.Vector3();
     camera.getWorldDirection(dir); dir.y = 0; dir.normalize();
     right.crossVectors(camera.up, dir).normalize();
-    if (keys.current.w) camera.position.addScaledVector(dir, speed);
-    if (keys.current.s) camera.position.addScaledVector(dir, -speed);
-    if (keys.current.a) camera.position.addScaledVector(right, speed);
-    if (keys.current.d) camera.position.addScaledVector(right, -speed);
-    if (keys.current.q) camera.position.y += speed;
-    if (keys.current.e) camera.position.y -= speed;
+    
+    // Save old position in case of collision
+    const oldPos = camera.position.clone();
+    
+    // Calculate potential new position
+    const nextPos = camera.position.clone();
+    if (keys.current.w) nextPos.addScaledVector(dir, speed);
+    if (keys.current.s) nextPos.addScaledVector(dir, -speed);
+    if (keys.current.a) nextPos.addScaledVector(right, speed);
+    if (keys.current.d) nextPos.addScaledVector(right, -speed);
+    if (keys.current.q) nextPos.y += speed;
+    if (keys.current.e) nextPos.y -= speed;
+
+    // Boundary check / Collision engine
+    let collides = false;
+
+    if (activeHouse && activeHouse.rooms) {
+      for (const room of activeHouse.rooms) {
+        const offset = room.offset || [0, 0, 0];
+        const w = room.room?.dimensions?.width || 5.0;
+        const l = room.room?.dimensions?.length || 5.0;
+        const h = room.room?.dimensions?.height || 3.0;
+
+        // Calculate absolute room bounds in global coordinates
+        const minX = offset[0] - w / 2;
+        const maxX = offset[0] + w / 2;
+        const minZ = offset[2] - l / 2;
+        const maxZ = offset[2] + l / 2;
+
+        // Check if camera is within room height bounds
+        const insideY = nextPos.y >= 0 && nextPos.y <= h;
+        if (!insideY) continue;
+
+        // Is camera within horizontal boundaries of this room?
+        const insideXZ = nextPos.x >= minX && nextPos.x <= maxX && nextPos.z >= minZ && nextPos.z <= maxZ;
+
+        if (insideXZ) {
+          const wallMargin = 0.3; // 0.3m margin from wall
+
+          // Check left wall (X = minX)
+          if (nextPos.x - minX < wallMargin) {
+            // Check if there is an active connection to the left
+            const hasLeftConn = activeHouse.connections?.some(conn => {
+              const other = activeHouse.rooms.find(r => r.room_id === (conn.from === room.room_id ? conn.to : conn.from));
+              return other && other.offset[0] < offset[0] && Math.abs(other.offset[2] - offset[2]) < 2.0;
+            });
+            const nearDoorZ = Math.abs(nextPos.z - offset[2]) < 1.0; // 1m doorway width
+            if (!hasLeftConn || !nearDoorZ) collides = true;
+          }
+
+          // Check right wall (X = maxX)
+          if (maxX - nextPos.x < wallMargin) {
+            const hasRightConn = activeHouse.connections?.some(conn => {
+              const other = activeHouse.rooms.find(r => r.room_id === (conn.from === room.room_id ? conn.to : conn.from));
+              return other && other.offset[0] > offset[0] && Math.abs(other.offset[2] - offset[2]) < 2.0;
+            });
+            const nearDoorZ = Math.abs(nextPos.z - offset[2]) < 1.0;
+            if (!hasRightConn || !nearDoorZ) collides = true;
+          }
+
+          // Check back wall (Z = minZ)
+          if (nextPos.z - minZ < wallMargin) {
+            const hasBackConn = activeHouse.connections?.some(conn => {
+              const other = activeHouse.rooms.find(r => r.room_id === (conn.from === room.room_id ? conn.to : conn.from));
+              return other && other.offset[2] < offset[2] && Math.abs(other.offset[0] - offset[0]) < 2.0;
+            });
+            const nearDoorX = Math.abs(nextPos.x - offset[0]) < 1.0;
+            if (!hasBackConn || !nearDoorX) collides = true;
+          }
+
+          // Check front wall (Z = maxZ)
+          if (maxZ - nextPos.z < wallMargin) {
+            const hasFrontConn = activeHouse.connections?.some(conn => {
+              const other = activeHouse.rooms.find(r => r.room_id === (conn.from === room.room_id ? conn.to : conn.from));
+              return other && other.offset[2] > offset[2] && Math.abs(other.offset[0] - offset[0]) < 2.0;
+            });
+            const nearDoorX = Math.abs(nextPos.x - offset[0]) < 1.0;
+            if (!hasFrontConn || !nearDoorX) collides = true;
+          }
+
+          // Check furniture item collisions inside this room
+          for (const item of room.furniture || []) {
+            if (['Rug', 'PendantLight', 'WallMirror', 'Mirror', 'Painting'].includes(item.type)) continue;
+
+            const itemPos = item.position || [0,0,0];
+            const size = item.size || [1,1,1];
+
+            const itemX = offset[0] + itemPos[0];
+            const itemY = offset[1] + itemPos[1];
+            const itemZ = offset[2] + itemPos[2];
+
+            const itemMargin = 0.25;
+            const minFX = itemX - size[0]/2 - itemMargin;
+            const maxFX = itemX + size[0]/2 + itemMargin;
+            const minFY = itemY - size[1]/2 - itemMargin;
+            const maxFY = itemY + size[1]/2 + itemMargin;
+            const minFZ = itemZ - size[2]/2 - itemMargin;
+            const maxFZ = itemZ + size[2]/2 + itemMargin;
+
+            if (nextPos.x >= minFX && nextPos.x <= maxFX &&
+                nextPos.y >= minFY && nextPos.y <= maxFY &&
+                nextPos.z >= minFZ && nextPos.z <= maxFZ) {
+              collides = true;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    if (!collides) {
+      camera.position.copy(nextPos);
+    }
+
+    // Set camera state globally for Minimap coordinate updates
+    window.minisceneCameraState = {
+      x: camera.position.x,
+      y: camera.position.y,
+      z: camera.position.z,
+      angle: Math.atan2(dir.x, dir.z)
+    };
   });
 
   return <PointerLockControls makeDefault />;
@@ -1617,6 +1732,76 @@ function DemoCameraController({ isHardcodedDemo, cameraStart }) {
   return null;
 }
 
+function HouseCameraController({ activeHouse, cameraMode }) {
+  const { camera, controls } = useThree();
+  const targetPos = useRef(new THREE.Vector3());
+  const targetLookAt = useRef(new THREE.Vector3());
+  const activeRoomIdRef = useRef(null);
+
+  useEffect(() => {
+    if (!activeHouse || cameraMode !== 'orbit') return;
+    const activeRoomId = activeHouse.currentRoomId;
+    
+    if (activeRoomId === 'whole_house') {
+      let minX = Infinity, maxX = -Infinity;
+      let minZ = Infinity, maxZ = -Infinity;
+
+      activeHouse.rooms.forEach(room => {
+        const offset = room.offset || [0, 0, 0];
+        const w = room.room?.dimensions?.width || 5.0;
+        const l = room.room?.dimensions?.length || 5.0;
+        
+        if (offset[0] - w / 2 < minX) minX = offset[0] - w / 2;
+        if (offset[0] + w / 2 > maxX) maxX = offset[0] + w / 2;
+        if (offset[2] - l / 2 < minZ) minZ = offset[2] - l / 2;
+        if (offset[2] + l / 2 > maxZ) maxZ = offset[2] + l / 2;
+      });
+
+      const centerX = (minX + maxX) / 2;
+      const centerZ = (minZ + maxZ) / 2;
+      const sizeX = maxX - minX;
+      const sizeZ = maxZ - minZ;
+      const maxDim = Math.max(sizeX, sizeZ) || 10;
+
+      targetLookAt.current.set(centerX, 0, centerZ);
+      targetPos.current.set(centerX, maxDim * 0.9 + 3, centerZ + maxDim * 1.1);
+    } else {
+      const room = activeHouse.rooms.find(r => r.room_id === activeRoomId);
+      if (room) {
+        const offset = room.offset || [0, 0, 0];
+        const dimensions = room.room?.dimensions || { width: 6.0, length: 6.0, height: 3.0 };
+        
+        targetLookAt.current.set(offset[0], dimensions.height / 2, offset[2]);
+        targetPos.current.set(offset[0], dimensions.height + 2.5, offset[2] + dimensions.length * 1.1 + 1.5);
+      }
+    }
+
+    if (activeRoomIdRef.current === null) {
+      camera.position.copy(targetPos.current);
+      if (controls) {
+        controls.target.copy(targetLookAt.current);
+        controls.update();
+      }
+    }
+    
+    activeRoomIdRef.current = activeRoomId;
+  }, [activeHouse, activeHouse?.currentRoomId, cameraMode, camera, controls]);
+
+  useFrame(() => {
+    if (!activeHouse || cameraMode !== 'orbit' || activeRoomIdRef.current === null) return;
+    
+    const lerpSpeed = 0.05;
+    camera.position.lerp(targetPos.current, lerpSpeed);
+    
+    if (controls) {
+      controls.target.lerp(targetLookAt.current, lerpSpeed);
+      controls.update();
+    }
+  });
+
+  return null;
+}
+
 // ─── Keyboard global handler ───────────────────────────────────────────────
 
 function KeyboardHandler({ selectedId, onDelete, onTransformMode }) {
@@ -1855,46 +2040,6 @@ function DebugLogger({ placedItems }) {
       console.log("lights mounted");
       console.log("scene background", scene.background);
       console.log("renderer exposure", gl.toneMappingExposure);
-      
-      const dumpHierarchy = (obj, indent = 0) => {
-        let name = obj.name || obj.type || obj.constructor.name;
-        console.log(" ".repeat(indent * 2) + `- ${name} [type: ${obj.constructor.name}, id: ${obj.id}]`);
-        if (obj.children) {
-          // Guard against cycles in logging if there are any
-          obj.children.forEach(c => {
-            if (indent < 10) dumpHierarchy(c, indent + 1);
-          });
-        }
-      };
-      console.log("SCENE HIERARCHY DUMP:");
-      try {
-        dumpHierarchy(scene);
-      } catch (e) {
-        console.error("Hierarchy dump failed:", e);
-      }
-      
-      let foundMat = null;
-      scene.traverse((child) => {
-        if (child.isMesh) {
-          let parent = child.parent;
-          while (parent) {
-            if (parent.name && parent.name.startsWith("placed-furniture-")) {
-              if (child.material) {
-                foundMat = Array.isArray(child.material) ? child.material[0] : child.material;
-                break;
-              }
-            }
-            parent = parent.parent;
-          }
-          if (foundMat) return;
-        }
-      });
-
-      if (foundMat) {
-        console.log("placed furniture material", foundMat.color, foundMat.opacity);
-      } else {
-        console.log("placed furniture material", undefined, undefined);
-      }
     }
   }, [placedItems, scene, gl]);
 
@@ -1942,6 +2087,8 @@ export default function Scene({
   demoSceneData,
   showCameraDebug,
   compareOriginal,
+  activeHouse,
+  presentationMode,
 }) {
   useEffect(() => {
     console.log("Scene mounted", pointCloudUrl);
@@ -1958,11 +2105,10 @@ export default function Scene({
       const d = demoSceneData.room.dimensions.length || 7.2;
       return [-w / 2 * scaleFactor, w / 2 * scaleFactor, -d / 2 * scaleFactor, d / 2 * scaleFactor];
     }
-    // Determine visual room bounds synced with ProxyRoom and Backend clamping (Requirement 7)
     let minX = -2.5, maxX = 2.5, minZ = -2.5, maxZ = 2.5;
     if (pcStats && pcStats.min && pcStats.max && pcStats.size) {
       const centerX = (pcStats.min.x + pcStats.max.x) / 2;
-      const centerZ = (-pcStats.min.z - pcStats.max.z) / 2; // ThreeJS Z is negative of PLY Z
+      const centerZ = (-pcStats.min.z - pcStats.max.z) / 2;
       
       const rawWidth = (pcStats.size.x || 5.0) * 1.15;
       const rawDepth = (pcStats.size.z || 5.0) * 1.15;
@@ -2012,7 +2158,6 @@ export default function Scene({
       };
 
       return list.map(obj => {
-        // Clone and apply snapToWall to prevent mutating original state directly
         const roomObj = { width: roomW, length: roomD, height: roomH };
         const clonedObj = {
           ...obj,
@@ -2034,7 +2179,6 @@ export default function Scene({
         
         const isWallMounted = ['wall_art', 'mirror', 'radiator', 'painting', 'curtain', 'wall_light'].includes(cat) || ['wall_art', 'mirror', 'radiator', 'painting', 'curtain', 'wall_light'].some(c => labelLower.includes(c));
 
-        // Snapping system
         let snapX = raw_pos[0];
         let snapZ = raw_pos[2];
 
@@ -2058,7 +2202,6 @@ export default function Scene({
           }
         }
 
-        // Perspective/rotation-aware dimensions for clamping
         const isRotated90 = Math.abs(Math.abs(rotY) - 1.5708) < 0.1;
         const w_world = isRotated90 ? d : w;
         const d_world = isRotated90 ? w : d;
@@ -2066,7 +2209,6 @@ export default function Scene({
         const scaledX = snapX * scaleFactor;
         const scaledZ = snapZ * scaleFactor;
 
-        // 1. Clamping bounds to prevent clipping (X and Z)
         let clampedX = scaledX;
         let clampedZ = scaledZ;
         if (!isWallMounted) {
@@ -2078,7 +2220,6 @@ export default function Scene({
         const scaledH = h * scaleFactor;
         const scaledD = d * scaleFactor;
 
-        // 2. Snapping Y position:
         let finalPosY = FLOOR_Y_SCALED + scaledH / 2;
         let finalBaseY = FLOOR_Y_SCALED;
 
@@ -2094,7 +2235,6 @@ export default function Scene({
             finalBaseY = FLOOR_Y_SCALED;
           }
         } else if (labelLower.includes('lamp') && !cat.includes('ceiling') && !labelLower.includes('chandelier') && !labelLower.includes('pendant')) {
-          // Find if there's a bedside table or other nightstand directly underneath
           const tableBelow = list.find(other => {
             if (other.id === snappedObj.id) return false;
             const otherCat = (other.category || other.placement_category || '').toLowerCase();
@@ -2106,7 +2246,7 @@ export default function Scene({
             const objX = raw_pos[0];
             const objZ = raw_pos[2];
             const distSq = (otherX - objX) ** 2 + (otherZ - objZ) ** 2;
-            return distSq < 0.25; // within 0.5m
+            return distSq < 0.25;
           });
           if (tableBelow) {
             const tableHeight = tableBelow.size ? tableBelow.size[1] : 0.64;
@@ -2119,7 +2259,6 @@ export default function Scene({
             finalBaseY = finalPosY - scaledH / 2;
           }
         } else if (cat.includes('wall') || cat.includes('mirror') || cat.includes('painting') || cat.includes('window') || cat.includes('curtain') || labelLower.includes('mirror') || labelLower.includes('painting') || labelLower.includes('window') || labelLower.includes('curtain') || labelLower.includes('tv') || labelLower.includes('screen')) {
-          // Wall objects
           if (labelLower.includes('painting') || labelLower.includes('wall_art') || labelLower.includes('art') || labelLower.includes('artwork')) {
             finalPosY = FLOOR_Y_SCALED + roomHeight_scaled * 0.65;
           } else if (labelLower.includes('tv') || labelLower.includes('screen')) {
@@ -2132,7 +2271,6 @@ export default function Scene({
           }
           finalBaseY = finalPosY - scaledH / 2;
         } else if (cat.includes('ceiling') || labelLower.includes('chandelier') || labelLower.includes('pendant')) {
-          // Ceiling objects
           if (labelLower.includes('pendant')) {
             finalPosY = FLOOR_Y_SCALED + roomHeight_scaled - 0.25 * scaleFactor;
           } else {
@@ -2145,7 +2283,6 @@ export default function Scene({
           finalBaseY = FLOOR_Y_SCALED + base_y_json * scaleFactor;
         }
 
-        // 3. Validation & Auto-correct pass
         let validatedPosY = finalPosY;
         let validatedBaseY = finalBaseY;
         let validatedX = clampedX;
@@ -2192,7 +2329,6 @@ export default function Scene({
     }
 
     return list.map(obj => {
-      // 1. Convert coordinates (flip Y and Z due to point cloud rotation)
       const [rawX, rawY, rawZ] = obj.box_3d?.center || [0, 0, 0];
       const [w, h, d] = obj.box_3d?.size || [1, 1, 1];
 
@@ -2472,12 +2608,13 @@ export default function Scene({
       <AddFurnitureAuditor placedItems={placedItems} selectedId={selectedId} />
       <DebugLogger placedItems={placedItems} />
       <CameraStabilizer placedItems={placedItems} />
-      {showCameraDebug && !isDragging && (
+      {showCameraDebug && !isDragging && !presentationMode && (
         <DebugOverlay placedItems={placedItems} selectedId={selectedId} />
       )}
       <KeyboardHandler selectedId={selectedId} onDelete={onDeleteSelected} onTransformMode={onTransformModeChange} />
       <AutoFitController stats={pcStats} fitTrigger={fitTrigger} />
       <DemoCameraController isHardcodedDemo={isHardcodedDemo} cameraStart={demoSceneData?.camera_start} />
+      <HouseCameraController activeHouse={activeHouse} cameraMode={cameraMode} />
       <CameraSetup />
       <color attach="background" args={['#0b0f19']} />
       
@@ -2514,138 +2651,343 @@ export default function Scene({
             />
           );
         })}
-        <Suspense fallback={null}>
-          <ErrorBoundary>
-            <PointCloud
-              settings={viewSettings}
-              removedObjects={removedObjects}
-              repairMode={repairMode}
-              onRepairAnalyticsUpdate={onRepairAnalyticsUpdate}
-              pointCloudUrl={pointCloudUrl}
-              onLoad={handlePointCloudLoad}
-              isSceneVisible={isSceneVisible}
+
+        {activeHouse ? (
+          activeHouse.rooms.map(room => {
+            const isCurrentRoom = activeHouse.currentRoomId === 'whole_house' || activeHouse.currentRoomId === room.room_id;
+            if (!isCurrentRoom) return null;
+
+            const roomObjects = room.furniture || [];
+            const roomPlaced = roomObjects.filter(f => !f.detected);
+            
+            const alignRoomObjects = (list) => {
+              const FLOOR_Y = !room.pointCloudUrl ? 0 : (viewSettings.floorHeight || -2);
+              const FLOOR_Y_SCALED = FLOOR_Y * scaleFactor;
+              const roomW = room.room.dimensions.width;
+              const roomD = room.room.dimensions.length;
+              const roomH = room.room.dimensions.height;
+              const roomHeight_scaled = roomH * scaleFactor;
+
+              const leftWallX = -roomW / 2;
+              const rightWallX = roomW / 2;
+              const frontWallZ = -roomD / 2;
+              const backWallZ = roomD / 2;
+
+              return list.map(obj => {
+                if (obj.edited) {
+                  const [w, h, d] = obj.size || [1, 1, 1];
+                  const [scaleX, scaleY, scaleZ] = obj.scale || [1, 1, 1];
+                  const scaledW = w * scaleX;
+                  const scaledH = h * scaleY;
+                  const scaledD = d * scaleZ;
+                  return {
+                    ...obj,
+                    placement_category: obj.category || 'floor',
+                    box_3d: {
+                      center: obj.position,
+                      base_position: [obj.position[0], obj.position[1] - scaledH / 2, obj.position[2]],
+                      size: [scaledW, scaledH, scaledD],
+                      rotationY: obj.rotation[1],
+                    }
+                  };
+                }
+
+                const rawPos = obj.originalPosition || obj.position || [0,0,0];
+                const rawSize = obj.size || [1,1,1];
+                const rotY = obj.rotation ? obj.rotation[1] : 0;
+
+                const cat = (obj.category || 'floor').toLowerCase();
+                const labelLower = (obj.name || obj.label || '').toLowerCase();
+                
+                const isSuspendedOrSurface = ['upper', 'countertop', 'backsplash', 'stove', 'cooktop', 'sink', 'faucet', 'window', 'oven'].some(c => cat.includes(c) || labelLower.includes(c));
+                const isFurniture = ['bed', 'sofa', 'chair', 'table', 'wardrobe', 'console', 'cabinet', 'bookshelf', 'rug', 'nightstand', 'stool', 'seating', 'appliance', 'bench'].some(c => cat.includes(c) || labelLower.includes(c)) && !isSuspendedOrSurface;
+                const isWallMounted = ['wall_art', 'mirror', 'radiator', 'painting', 'curtain', 'wall_light'].includes(cat) || ['wall_art', 'mirror', 'radiator', 'painting', 'curtain', 'wall_light'].some(c => labelLower.includes(c));
+
+                let snapX = rawPos[0];
+                let snapZ = rawPos[2];
+
+                const wall = obj.wall || obj.placement_wall;
+                if (wall) {
+                  if (wall === "right") {
+                    snapX = roomW / 2 - rawSize[0] / 2;
+                  } else if (wall === "left") {
+                    snapX = -roomW / 2 + rawSize[0] / 2;
+                  } else if (wall === "back") {
+                    snapZ = -roomD / 2 + rawSize[2] / 2;
+                  }
+                }
+
+                const isRotated90 = Math.abs(Math.abs(rotY) - 1.5708) < 0.1;
+                const w_world = isRotated90 ? rawSize[2] : rawSize[0];
+                const d_world = isRotated90 ? rawSize[0] : rawSize[2];
+
+                let clampedX = snapX * scaleFactor;
+                let clampedZ = snapZ * scaleFactor;
+                if (!isWallMounted) {
+                  clampedX = Math.max(leftWallX * scaleFactor + (w_world * scaleFactor) / 2, Math.min(rightWallX * scaleFactor - (w_world * scaleFactor) / 2, snapX * scaleFactor));
+                  clampedZ = Math.max(frontWallZ * scaleFactor + (d_world * scaleFactor) / 2, Math.min(backWallZ * scaleFactor - (d_world * scaleFactor) / 2, snapZ * scaleFactor));
+                }
+                
+                const scaledW = rawSize[0] * scaleFactor;
+                const scaledH = rawSize[1] * scaleFactor;
+                const scaledD = rawSize[2] * scaleFactor;
+
+                let finalPosY = FLOOR_Y_SCALED + scaledH / 2;
+                let finalBaseY = FLOOR_Y_SCALED;
+
+                if (isWallMounted) {
+                  finalPosY = FLOOR_Y_SCALED + rawPos[1] * scaleFactor;
+                  finalBaseY = finalPosY - scaledH / 2;
+                } else if (isFurniture) {
+                  if (cat.includes('rug') || labelLower.includes('rug')) {
+                    finalPosY = FLOOR_Y_SCALED + (0.01 * scaleFactor) + scaledH / 2;
+                    finalBaseY = FLOOR_Y_SCALED + (0.01 * scaleFactor);
+                  } else {
+                    finalPosY = FLOOR_Y_SCALED + scaledH / 2;
+                    finalBaseY = FLOOR_Y_SCALED;
+                  }
+                } else {
+                  finalPosY = FLOOR_Y_SCALED + rawPos[1] * scaleFactor;
+                  finalBaseY = finalPosY - scaledH / 2;
+                }
+
+                let validatedPosY = finalPosY;
+                let validatedBaseY = finalBaseY;
+                if (validatedPosY - scaledH / 2 < FLOOR_Y_SCALED) {
+                  validatedPosY += (FLOOR_Y_SCALED - (validatedPosY - scaledH / 2));
+                  validatedBaseY = validatedPosY - scaledH / 2;
+                }
+
+                return {
+                  ...obj,
+                  placement_category: cat,
+                  box_3d: {
+                    center: [clampedX, validatedPosY, clampedZ],
+                    base_position: [clampedX, validatedBaseY, clampedZ],
+                    size: [scaledW, scaledH, scaledD],
+                    rotationY: rotY,
+                  }
+                };
+              });
+            };
+
+            const activeAlignedRoomObjects = alignRoomObjects(roomObjects);
+
+            const displayedRoomItems = compareOriginal
+              ? alignRoomObjects(roomObjects.map(item => ({
+                  ...item,
+                  position: item.originalPosition || item.position,
+                  rotation: item.originalRotation || item.rotation,
+                  scale: item.originalScale || item.scale,
+                  color: item.originalColor || item.color,
+                  material: item.originalMaterial || item.material
+                })))
+              : activeAlignedRoomObjects;
+
+            return (
+              <group key={room.room_id} position={room.offset}>
+                <ProxyRoom
+                  viewMode={viewSettings.viewMode}
+                  wallOpacity={viewSettings.wallOpacity}
+                  floorHeight={viewSettings.floorHeight}
+                  roomScale={scaleFactor}
+                  showGrid={viewSettings.showGrid}
+                  showWalls={viewSettings.showWalls}
+                  showCeiling={viewSettings.showCeiling}
+                  placementMode={placementMode}
+                  onSceneClick={(pt) => {
+                    if (placementMode) {
+                      onSceneClick({ x: pt.x + room.offset[0], y: pt.y + room.offset[1], z: pt.z + room.offset[2] });
+                    }
+                  }}
+                  pcBounds={room.pcStats}
+                  isHardcodedDemo={!room.pointCloudUrl}
+                  roomData={room.room}
+                />
+
+                {room.pointCloudUrl && (
+                  <Suspense fallback={null}>
+                    <ErrorBoundary>
+                      <PointCloud
+                        settings={viewSettings}
+                        removedObjects={room.removedObjects || []}
+                        repairMode={repairMode}
+                        onRepairAnalyticsUpdate={onRepairAnalyticsUpdate}
+                        pointCloudUrl={room.pointCloudUrl}
+                        onLoad={() => {}}
+                        isSceneVisible={isSceneVisible}
+                      />
+                    </ErrorBoundary>
+                  </Suspense>
+                )}
+
+                {isSceneVisible && displayedRoomItems.map(item => {
+                  const isSelected = selectedId === item.id;
+                  const itemProps = {
+                    key: item.id,
+                    item: {
+                      ...item,
+                      position: item.box_3d?.center || item.position,
+                      rotation: [0, item.box_3d?.rotationY || item.rotation[1], 0],
+                      scale: [1, 1, 1],
+                      size: item.box_3d?.size || item.size,
+                    },
+                    selected: compareOriginal ? false : isSelected,
+                    onSelect,
+                    onUpdate: onUpdatePlacedItem,
+                    transformMode,
+                    viewSettings,
+                    onDraggingChange: setIsDragging,
+                    compareOriginal,
+                    presentationMode
+                  };
+
+                  if (!room.pointCloudUrl && item.detected) {
+                    return <HardcodedDemoFurniture {...itemProps} demoSceneData={{ room: room.room }} />;
+                  } else if (room.pointCloudUrl && item.detected) {
+                    return <DetectedFurniture {...itemProps} />;
+                  } else {
+                    return <PlacedFurniture {...itemProps} isHardcodedDemo={!room.pointCloudUrl} demoSceneData={{ room: room.room }} />;
+                  }
+                })}
+
+                {showWalkablePanel && isSceneVisible && (
+                  <WalkableOverlay
+                    settings={viewSettings}
+                    objects={activeAlignedRoomObjects}
+                    placedItems={compareOriginal ? [] : roomPlaced}
+                    onUpdateAnalytics={onWalkableAnalyticsUpdate}
+                  />
+                )}
+
+                {isSceneVisible && !presentationMode && (
+                  <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={activeAlignedRoomObjects} placedItems={compareOriginal ? [] : roomPlaced} />
+                )}
+                
+                {isSceneVisible && !presentationMode && (
+                  <MeasurementOverlay 
+                    objects={activeAlignedRoomObjects} 
+                    placedItems={compareOriginal ? [] : roomPlaced} 
+                    settings={viewSettings} 
+                    visible={showMeasurements} 
+                    roomAnalysis={room.roomAnalysis}
+                    pcStats={room.pcStats}
+                    scaleFactor={scaleFactor}
+                    distancePickerObjects={distancePickerObjects}
+                  />
+                )}
+              </group>
+            );
+          })
+        ) : (
+          <>
+            <ProxyRoom
+              viewMode={viewSettings.viewMode}
+              wallOpacity={viewSettings.wallOpacity}
+              floorHeight={viewSettings.floorHeight}
+              roomScale={scaleFactor}
+              showGrid={viewSettings.showGrid}
+              showWalls={viewSettings.showWalls}
+              showCeiling={viewSettings.showCeiling}
+              placementMode={placementMode}
+              onSceneClick={handleSceneClickInternal}
+              pcBounds={pcStats}
+              isHardcodedDemo={isHardcodedDemo}
+              roomData={demoSceneData?.room}
             />
-          </ErrorBoundary>
-        </Suspense>
 
-        <ProxyRoom
-          viewMode={viewSettings.viewMode}
-          wallOpacity={viewSettings.wallOpacity}
-          floorHeight={viewSettings.floorHeight}
-          roomScale={scaleFactor}
-          showGrid={viewSettings.showGrid}
-          showWalls={viewSettings.showWalls}
-          showCeiling={viewSettings.showCeiling}
-          placementMode={placementMode}
-          onSceneClick={handleSceneClickInternal}
-          pcBounds={pcStats}
-          isHardcodedDemo={isHardcodedDemo}
-          roomData={demoSceneData?.room}
-        />
+            <Suspense fallback={null}>
+              <ErrorBoundary>
+                <PointCloud
+                  settings={viewSettings}
+                  removedObjects={removedObjects}
+                  repairMode={repairMode}
+                  onRepairAnalyticsUpdate={onRepairAnalyticsUpdate}
+                  pointCloudUrl={pointCloudUrl}
+                  onLoad={handlePointCloudLoad}
+                  isSceneVisible={isSceneVisible}
+                />
+              </ErrorBoundary>
+            </Suspense>
 
-        {showWalkablePanel && isSceneVisible && (
-          <WalkableOverlay
-            settings={viewSettings}
-            objects={activeAlignedObjects}
-            placedItems={compareOriginal ? [] : placedItems}
-            onUpdateAnalytics={onWalkableAnalyticsUpdate}
-          />
-        )}
-
-        {isSceneVisible && (
-          <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={activeAlignedObjects} placedItems={compareOriginal ? [] : placedItems} />
-        )}
-        
-        {isSceneVisible && (
-          <MeasurementOverlay 
-            objects={activeAlignedObjects} 
-            placedItems={compareOriginal ? [] : placedItems} 
-            settings={viewSettings} 
-            visible={showMeasurements} 
-            roomAnalysis={roomAnalysis}
-            pcStats={pcStats}
-            scaleFactor={scaleFactor}
-            distancePickerObjects={distancePickerObjects}
-          />
-        )}
-
-        {showAssistantPanel && isSceneVisible && (
-          <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={activeAlignedObjects} placedItems={compareOriginal ? [] : placedItems} />
-        )}
-
-        {showGraphPanel && isSceneVisible && (
-          <GraphOverlay
-            objects={activeAlignedObjects}
-            placedItems={compareOriginal ? [] : placedItems}
-            settings={viewSettings}
-            hoverSource={activeGraphSource}
-            hoverTarget={activeGraphTarget}
-            isHardcodedDemo={isHardcodedDemo}
-            relations={demoSceneData?.relations}
-            demoSceneData={demoSceneData}
-          />
-        )}
-
-        {showCVPanel && isSceneVisible && (
-          <CVOverlay settings={viewSettings} pipelineStage={cvStage} currentFrame={cvFrame} />
-        )}
-
-        {isSceneVisible && displayedItems.map(item => {
-          if (isHardcodedDemo && item.detected) {
-            return (
-              <HardcodedDemoFurniture
-                key={item.id}
-                item={item}
-                selected={compareOriginal ? false : (selectedId === item.id)}
-                onSelect={onSelect}
-                onUpdate={onUpdatePlacedItem}
-                transformMode={transformMode}
-                viewSettings={viewSettings}
-                demoSceneData={demoSceneData}
-                onDraggingChange={setIsDragging}
-                compareOriginal={compareOriginal}
+            {isSceneVisible && !presentationMode && (
+              <SemanticOverlay viewMode={viewSettings.viewMode} settings={viewSettings} objects={activeAlignedObjects} placedItems={compareOriginal ? [] : placedItems} />
+            )}
+            
+            {isSceneVisible && !presentationMode && (
+              <MeasurementOverlay 
+                objects={activeAlignedObjects} 
+                placedItems={compareOriginal ? [] : placedItems} 
+                settings={viewSettings} 
+                visible={showMeasurements} 
+                roomAnalysis={roomAnalysis}
+                pcStats={pcStats}
+                scaleFactor={scaleFactor}
+                distancePickerObjects={distancePickerObjects}
               />
-            );
-          } else if (!isHardcodedDemo && item.detected) {
-            return (
-              <DetectedFurniture
-                key={item.id}
-                item={item}
-                selected={compareOriginal ? false : (selectedId === item.id)}
-                onSelect={onSelect}
-                onUpdate={onUpdatePlacedItem}
-                transformMode={transformMode}
-                viewSettings={viewSettings}
-                onDraggingChange={setIsDragging}
-                compareOriginal={compareOriginal}
+            )}
+
+            {showWalkablePanel && isSceneVisible && (
+              <WalkableOverlay
+                settings={viewSettings}
+                objects={activeAlignedObjects}
+                placedItems={compareOriginal ? [] : placedItems}
+                onUpdateAnalytics={onWalkableAnalyticsUpdate}
               />
-            );
-          } else {
-            return (
-              <PlacedFurniture
-                key={item.id}
-                item={item}
-                selected={compareOriginal ? false : (selectedId === item.id)}
-                onSelect={onSelect}
-                onUpdate={onUpdatePlacedItem}
-                transformMode={transformMode}
+            )}
+
+            {showAssistantPanel && isSceneVisible && (
+              <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={activeAlignedObjects} placedItems={compareOriginal ? [] : placedItems} />
+            )}
+
+            {showGraphPanel && isSceneVisible && !presentationMode && (
+              <GraphOverlay
+                objects={activeAlignedObjects}
+                placedItems={compareOriginal ? [] : placedItems}
+                settings={viewSettings}
+                hoverSource={activeGraphSource}
+                hoverTarget={activeGraphTarget}
                 isHardcodedDemo={isHardcodedDemo}
-                viewSettings={viewSettings}
+                relations={demoSceneData?.relations}
                 demoSceneData={demoSceneData}
-                onDraggingChange={setIsDragging}
-                compareOriginal={compareOriginal}
               />
-            );
-          }
-        })}
+            )}
 
-        {viewSettings.showGrid && (
+            {showCVPanel && isSceneVisible && !presentationMode && (
+              <CVOverlay settings={viewSettings} pipelineStage={cvStage} currentFrame={cvFrame} />
+            )}
+
+            {isSceneVisible && displayedItems.map(item => {
+              const itemProps = {
+                key: item.id,
+                item,
+                selected: compareOriginal ? false : (selectedId === item.id),
+                onSelect,
+                onUpdate: onUpdatePlacedItem,
+                transformMode,
+                viewSettings,
+                onDraggingChange: setIsDragging,
+                compareOriginal,
+                presentationMode
+              };
+
+              if (isHardcodedDemo && item.detected) {
+                return <HardcodedDemoFurniture {...itemProps} demoSceneData={demoSceneData} />;
+              } else if (!isHardcodedDemo && item.detected) {
+                return <DetectedFurniture {...itemProps} />;
+              } else {
+                return <PlacedFurniture {...itemProps} isHardcodedDemo={isHardcodedDemo} demoSceneData={demoSceneData} />;
+              }
+            })}
+          </>
+        )}
+
+        {viewSettings.showGrid && !presentationMode && (
           <gridHelper args={[15, 15, '#06b6d4', '#475569']} position={[0, viewSettings.floorHeight + 0.02, 0]} />
         )}
 
-        {viewSettings?.showObjectDebug && (
+        {viewSettings?.showObjectDebug && !presentationMode && (
           <group>
-            {/* Green floor line / grid at FLOOR_Y */}
             <gridHelper 
               args={[30, 30, '#22c55e', '#22c55e']} 
               position={[0, isHardcodedDemo ? 0.005 : (viewSettings.floorHeight + 0.005), 0]} 
@@ -2665,7 +3007,7 @@ export default function Scene({
         )}
 
         {cameraMode === 'walk' ? (
-          <WalkControls />
+          <WalkControls activeHouse={activeHouse} />
         ) : (
           <OrbitControls makeDefault dampingFactor={0.06} enableDamping />
         )}
