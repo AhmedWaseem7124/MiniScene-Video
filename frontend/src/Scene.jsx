@@ -915,6 +915,402 @@ function getPartType(type, defaultColorHex) {
   return 'primary';
 }
 
+function HardcodedDemoFurniture({ item, selected, onSelect, onUpdate, transformMode, viewSettings, demoSceneData, onDraggingChange, compareOriginal }) {
+  const outerGroupRef = useRef();
+  const innerGroupRef = useRef();
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (selected && innerGroupRef.current) {
+      const timer = setTimeout(() => setReady(true), 0);
+      return () => clearTimeout(timer);
+    } else {
+      setReady(false);
+    }
+  }, [selected]);
+
+  useEffect(() => {
+    if (innerGroupRef.current) {
+      const typeLower = item.type?.toLowerCase() || '';
+      let categoryColor = '#d6cabc';
+      if (typeLower.includes('sofa') || typeLower.includes('armchair')) categoryColor = '#d6cabc';
+      else if (typeLower.includes('chair') || typeLower.includes('stool') || typeLower.includes('seat')) categoryColor = '#b77745';
+      else if (typeLower.includes('table') || typeLower.includes('desk')) categoryColor = '#f7f3ec';
+      else if (typeLower.includes('bed')) categoryColor = '#d8cfc4';
+      else if (typeLower.includes('cabinet') || typeLower.includes('cupboard') || typeLower.includes('bookshelf') || typeLower.includes('stand')) categoryColor = '#bfa889';
+      else if (typeLower.includes('rug') || typeLower.includes('carpet')) categoryColor = '#b9afa2';
+      
+      const preset = MATERIAL_PRESETS[item.material] || MATERIAL_PRESETS.matte;
+      const opacity = typeof item.opacity === 'number' ? item.opacity : (preset.opacity ?? 0.95);
+      const roughness = typeof item.roughness === 'number' ? item.roughness : (preset.roughness ?? 0.8);
+      const metalness = typeof item.metalness === 'number' ? item.metalness : (preset.metalness ?? 0.0);
+      const transparent = preset.transparent || opacity < 1.0;
+
+      innerGroupRef.current.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = false;
+          child.receiveShadow = false;
+
+          if (child.userData.originalColor === undefined) {
+            child.userData.originalColor = child.material && child.material.color 
+              ? '#' + child.material.color.getHexString() 
+              : '#ffffff';
+          }
+
+          const partType = getPartType(item.type, child.userData.originalColor);
+          let chosenColorHex = item.color || categoryColor || '#ffffff';
+          if (partType === 'primary') {
+            chosenColorHex = item.primaryColor || item.color || categoryColor || '#ffffff';
+          } else if (partType === 'secondary') {
+            chosenColorHex = item.secondaryColor || item.color || categoryColor || '#ffffff';
+          } else if (partType === 'accent') {
+            chosenColorHex = item.accentColor || item.color || categoryColor || '#ffffff';
+          }
+          const colorObj = new THREE.Color(chosenColorHex);
+
+          let materialToStyle = null;
+          if (!child.material) {
+            child.material = new THREE.MeshStandardMaterial();
+            materialToStyle = child.material;
+          } else if (Array.isArray(child.material)) {
+            child.material = child.material.map(m => m.clone());
+            materialToStyle = child.material;
+          } else {
+            child.material = child.material.clone();
+            materialToStyle = child.material;
+          }
+
+          const applyProperties = (mat) => {
+            mat.color = colorObj;
+            mat.roughness = roughness;
+            mat.metalness = metalness;
+            mat.opacity = opacity;
+            mat.transparent = transparent;
+          };
+
+          if (Array.isArray(materialToStyle)) {
+            materialToStyle.forEach(applyProperties);
+          } else {
+            applyProperties(materialToStyle);
+          }
+        }
+      });
+    }
+  }, [item.color, item.primaryColor, item.secondaryColor, item.accentColor, item.material, item.opacity, item.roughness, item.metalness, item.type]);
+
+  const handleChange = useCallback(() => {
+    const g = innerGroupRef.current;
+    if (!g) return;
+    
+    const originalSize = item.size || [1, 1, 1];
+    const nextScale = [g.scale.x / originalSize[0], g.scale.y / originalSize[1], g.scale.z / originalSize[2]];
+
+    onUpdate(item.id, {
+      position: [g.position.x, g.position.y, g.position.z],
+      rotation: [g.rotation.x, g.rotation.y, g.rotation.z],
+      scale: nextScale,
+    });
+  }, [item.id, item.size, onUpdate]);
+
+  const s = item.size || [1, 1, 1];
+  const groupScale = [
+    s[0] * (item.scale ? item.scale[0] : 1),
+    s[1] * (item.scale ? item.scale[1] : 1),
+    s[2] * (item.scale ? item.scale[2] : 1)
+  ];
+
+  const getModelForHardcoded = () => {
+    const labelLower = (item.label || item.name || '').toLowerCase();
+    
+    if (
+      labelLower.includes('kitchen_cabinet') || 
+      labelLower.includes('lower_kitchen') || 
+      labelLower.includes('base_cabinet') || 
+      labelLower.includes('cabinet_main') || 
+      labelLower.includes('storage_cabinet') || 
+      labelLower.includes('tall_cabinet')
+    ) {
+      return renderModel('KitchenCabinet');
+    }
+    if (labelLower.includes('refrigerator') || labelLower.includes('fridge')) {
+      return renderModel('Refrigerator');
+    }
+    if (labelLower.includes('oven')) {
+      return renderModel('OvenStack');
+    }
+    if (labelLower.includes('pendant') || labelLower.includes('chandelier')) {
+      return renderModel('PendantLight');
+    }
+    if (labelLower.includes('rug') || labelLower.includes('carpet')) {
+      return renderModel('Rug');
+    }
+    if (labelLower.includes('mirror')) {
+      return renderModel('WallMirror');
+    }
+    if (labelLower.includes('painting') || labelLower.includes('art')) {
+      return renderModel('Painting');
+    }
+    if (labelLower.includes('sofa') || labelLower.includes('couch') || labelLower.includes('bench')) {
+      return renderModel('Sofa');
+    }
+    if (labelLower.includes('table') || labelLower.includes('desk')) {
+      return renderModel('Table');
+    }
+    if (labelLower.includes('chair') || labelLower.includes('stool')) {
+      return renderModel('Chair');
+    }
+    if (labelLower.includes('cupboard') || (labelLower.includes('cabinet') && !labelLower.includes('kitchen') && !labelLower.includes('display'))) {
+      return renderModel('Cupboard');
+    }
+    if (labelLower.includes('display_cabinet') || (labelLower.includes('display') && labelLower.includes('cabinet'))) {
+      return renderModel('DisplayCabinet');
+    }
+
+    return (
+      <mesh>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial 
+          color={item.color || "#b9aa97"} 
+          roughness={0.7} 
+          transparent={item.opacity < 1.0}
+          opacity={item.opacity !== undefined ? item.opacity : 1.0}
+        />
+      </mesh>
+    );
+  };
+
+  const innerMesh = (
+    <group
+      ref={innerGroupRef}
+      name={`hardcoded-furniture-${item.id}`}
+      position={item.position || [0, 0, 0]}
+      rotation={item.rotation || [0, 0, 0]}
+      scale={groupScale}
+      onClick={e => {
+        if (compareOriginal) return;
+        e.stopPropagation();
+        onSelect(item.id);
+      }}
+    >
+      <group scale={[1, 1, 1]} position={[0, -0.5, 0]}>
+        {getModelForHardcoded()}
+      </group>
+      {selected && !compareOriginal && (
+        <lineSegments>
+          <edgesGeometry args={[new THREE.BoxGeometry(1.01, 1.01, 1.01)]} />
+          <lineBasicMaterial color="#06b6d4" linewidth={2} depthWrite={false} transparent opacity={0.8} />
+        </lineSegments>
+      )}
+    </group>
+  );
+
+  return (
+    <group ref={outerGroupRef}>
+      {selected && ready && innerGroupRef.current && !compareOriginal && (
+        <TransformControls
+          object={innerGroupRef.current}
+          mode={transformMode || 'translate'}
+          onMouseUp={handleChange}
+          onDraggingChange={(e) => {
+            if (onDraggingChange) {
+              onDraggingChange(!!e.value);
+            }
+          }}
+        />
+      )}
+      {innerMesh}
+    </group>
+  );
+}
+
+function DetectedFurniture({ item, selected, onSelect, onUpdate, transformMode, viewSettings, onDraggingChange, compareOriginal }) {
+  const outerGroupRef = useRef();
+  const innerGroupRef = useRef();
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (selected && innerGroupRef.current) {
+      const timer = setTimeout(() => setReady(true), 0);
+      return () => clearTimeout(timer);
+    } else {
+      setReady(false);
+    }
+  }, [selected]);
+
+  useEffect(() => {
+    if (innerGroupRef.current) {
+      const typeLower = item.type?.toLowerCase() || '';
+      let categoryColor = '#d6cabc';
+      if (typeLower.includes('sofa') || typeLower.includes('armchair')) categoryColor = '#d6cabc';
+      else if (typeLower.includes('chair') || typeLower.includes('stool') || typeLower.includes('seat')) categoryColor = '#b77745';
+      else if (typeLower.includes('table') || typeLower.includes('desk')) categoryColor = '#f7f3ec';
+      else if (typeLower.includes('bed')) categoryColor = '#d8cfc4';
+      else if (typeLower.includes('cabinet') || typeLower.includes('cupboard') || typeLower.includes('bookshelf') || typeLower.includes('stand')) categoryColor = '#bfa889';
+      else if (typeLower.includes('rug') || typeLower.includes('carpet')) categoryColor = '#b9afa2';
+      
+      const preset = MATERIAL_PRESETS[item.material] || MATERIAL_PRESETS.matte;
+      const opacity = typeof item.opacity === 'number' ? item.opacity : (preset.opacity ?? 0.95);
+      const roughness = typeof item.roughness === 'number' ? item.roughness : (preset.roughness ?? 0.8);
+      const metalness = typeof item.metalness === 'number' ? item.metalness : (preset.metalness ?? 0.0);
+      const transparent = preset.transparent || opacity < 1.0;
+
+      innerGroupRef.current.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = false;
+          child.receiveShadow = false;
+
+          if (child.userData.originalColor === undefined) {
+            child.userData.originalColor = child.material && child.material.color 
+              ? '#' + child.material.color.getHexString() 
+              : '#ffffff';
+          }
+
+          const partType = getPartType(item.type, child.userData.originalColor);
+          let chosenColorHex = item.color || categoryColor || '#ffffff';
+          if (partType === 'primary') {
+            chosenColorHex = item.primaryColor || item.color || categoryColor || '#ffffff';
+          } else if (partType === 'secondary') {
+            chosenColorHex = item.secondaryColor || item.color || categoryColor || '#ffffff';
+          } else if (partType === 'accent') {
+            chosenColorHex = item.accentColor || item.color || categoryColor || '#ffffff';
+          }
+          const colorObj = new THREE.Color(chosenColorHex);
+
+          let materialToStyle = null;
+          if (!child.material) {
+            child.material = new THREE.MeshStandardMaterial();
+            materialToStyle = child.material;
+          } else if (Array.isArray(child.material)) {
+            child.material = child.material.map(m => m.clone());
+            materialToStyle = child.material;
+          } else {
+            child.material = child.material.clone();
+            materialToStyle = child.material;
+          }
+
+          const applyProperties = (mat) => {
+            mat.color = colorObj;
+            mat.roughness = roughness;
+            mat.metalness = metalness;
+            mat.opacity = opacity;
+            mat.transparent = transparent;
+          };
+
+          if (Array.isArray(materialToStyle)) {
+            materialToStyle.forEach(applyProperties);
+          } else {
+            applyProperties(materialToStyle);
+          }
+        }
+      });
+    }
+  }, [item.color, item.primaryColor, item.secondaryColor, item.accentColor, item.material, item.opacity, item.roughness, item.metalness, item.type]);
+
+  const getModelScaleAndOffset = () => {
+    const type = item.type;
+    let scale = [1, 1, 1];
+    let offset = [0, -0.5, 0];
+
+    if (type === 'Cupboard') scale = [1 / 1.05, 1 / 2.0, 1 / 0.54];
+    else if (type === 'Bookshelf') scale = [1 / 0.9, 1 / 2.0, 1 / 0.3];
+    else if (type === 'TVStand') scale = [1 / 1.6, 1 / 0.6, 1 / 0.45];
+    else if (type === 'Mirror') scale = [1 / 0.72, 1 / 1.76, 1 / 0.06];
+    else if (type === 'WallMirror') scale = [1, 1, 1];
+    else if (type === 'Painting') scale = [1 / 1.1, 1 / 1.525, 1 / 0.06];
+    else if (type === 'Light') scale = [1 / 0.26, 1 / 1.61, 1 / 0.26];
+    else if (type === 'PendantLight') {
+      scale = [1 / 0.28, 1 / 1.97, 1 / 0.28];
+      offset = [0, 0.385, 0];
+    }
+    else if (type === 'Bed') scale = [1 / 1.42, 1 / 1.15, 1 / 2.14];
+    else if (type === 'KingBed') scale = [1 / 2.02, 1 / 1.25, 1 / 2.29];
+    else if (type === 'Chair') scale = [1 / 0.52, 1 / 1.16, 1 / 0.52];
+    else if (type === 'Armchair') scale = [1 / 0.82, 1 / 1.22, 1 / 0.8];
+    else if (type === 'Sofa') scale = [1 / 2.1, 1 / 0.9, 1 / 0.92];
+    else if (type === 'Table') scale = [1 / 1.6, 1 / 0.78, 1 / 0.85];
+    else if (type === 'Desk') scale = [1 / 1.4, 1 / 0.785, 1 / 0.7];
+    else if (type === 'SideTable') scale = [1 / 0.6, 1 / 0.57, 1 / 0.6];
+    else if (type === 'Plant') scale = [1 / 0.44, 1 / 1.06, 1 / 0.44];
+    else if (type === 'Decoration') scale = [1 / 0.32, 1 / 0.62, 1 / 0.32];
+    else if (type === 'Rug') scale = [1 / 2.4, 1 / 0.012, 1 / 1.6];
+
+    return { scale, offset };
+  };
+
+  const { scale: modelScale, offset: modelOffset } = getModelScaleAndOffset();
+  const s = item.size || [1, 1, 1];
+  const groupScale = [s[0] * (item.scale ? item.scale[0] : 1), s[1] * (item.scale ? item.scale[1] : 1), s[2] * (item.scale ? item.scale[2] : 1)];
+
+  const handleChange = useCallback(() => {
+    const g = innerGroupRef.current;
+    if (!g) return;
+    
+    let y = g.position.y;
+    let x = g.position.x;
+    let z = g.position.z;
+    const FLOOR_Y = viewSettings?.floorHeight || -2;
+    const height = g.scale.y;
+    
+    const originalSize = item.size || [1, 1, 1];
+    const nextScale = [g.scale.x / originalSize[0], g.scale.y / originalSize[1], g.scale.z / originalSize[2]];
+    
+    if (item.type === 'Rug') {
+      y = FLOOR_Y + 0.01;
+    } else if (isPlacedFloorFurniture(item.type)) {
+      y = FLOOR_Y + height / 2;
+    }
+    
+    onUpdate(item.id, {
+      position: [x, y, z],
+      rotation: [g.rotation.x, g.rotation.y, g.rotation.z],
+      scale: nextScale,
+    });
+  }, [item.id, item.type, item.size, onUpdate, viewSettings]);
+
+  const innerMesh = (
+    <group
+      ref={innerGroupRef}
+      name={`detected-furniture-${item.id}`}
+      position={item.position || [0, 0, 0]}
+      rotation={item.rotation || [0, 0, 0]}
+      scale={groupScale}
+      onClick={e => {
+        if (compareOriginal) return;
+        e.stopPropagation();
+        onSelect(item.id);
+      }}
+    >
+      <group scale={modelScale} position={modelOffset}>
+        {renderModel(item.type)}
+      </group>
+      {selected && !compareOriginal && (
+        <lineSegments>
+          <edgesGeometry args={[new THREE.BoxGeometry(1.01, 1.01, 1.01)]} />
+          <lineBasicMaterial color="#06b6d4" linewidth={2} depthWrite={false} transparent opacity={0.8} />
+        </lineSegments>
+      )}
+    </group>
+  );
+
+  return (
+    <group ref={outerGroupRef}>
+      {selected && ready && innerGroupRef.current && !compareOriginal && (
+        <TransformControls
+          object={innerGroupRef.current}
+          mode={transformMode || 'translate'}
+          onMouseUp={handleChange}
+          onDraggingChange={(e) => {
+            if (onDraggingChange) {
+              onDraggingChange(!!e.value);
+            }
+          }}
+        />
+      )}
+      {innerMesh}
+    </group>
+  );
+}
+
 function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, isHardcodedDemo, viewSettings, demoSceneData, onDraggingChange, compareOriginal }) {
   const outerGroupRef = useRef();
   const innerGroupRef = useRef();
@@ -2194,21 +2590,54 @@ export default function Scene({
           <CVOverlay settings={viewSettings} pipelineStage={cvStage} currentFrame={cvFrame} />
         )}
 
-        {isSceneVisible && displayedItems.map(item => (
-          <PlacedFurniture
-            key={item.id}
-            item={item}
-            selected={compareOriginal ? false : (selectedId === item.id)}
-            onSelect={onSelect}
-            onUpdate={onUpdatePlacedItem}
-            transformMode={transformMode}
-            isHardcodedDemo={isHardcodedDemo}
-            viewSettings={viewSettings}
-            demoSceneData={demoSceneData}
-            onDraggingChange={setIsDragging}
-            compareOriginal={compareOriginal}
-          />
-        ))}
+        {isSceneVisible && displayedItems.map(item => {
+          if (isHardcodedDemo && item.detected) {
+            return (
+              <HardcodedDemoFurniture
+                key={item.id}
+                item={item}
+                selected={compareOriginal ? false : (selectedId === item.id)}
+                onSelect={onSelect}
+                onUpdate={onUpdatePlacedItem}
+                transformMode={transformMode}
+                viewSettings={viewSettings}
+                demoSceneData={demoSceneData}
+                onDraggingChange={setIsDragging}
+                compareOriginal={compareOriginal}
+              />
+            );
+          } else if (!isHardcodedDemo && item.detected) {
+            return (
+              <DetectedFurniture
+                key={item.id}
+                item={item}
+                selected={compareOriginal ? false : (selectedId === item.id)}
+                onSelect={onSelect}
+                onUpdate={onUpdatePlacedItem}
+                transformMode={transformMode}
+                viewSettings={viewSettings}
+                onDraggingChange={setIsDragging}
+                compareOriginal={compareOriginal}
+              />
+            );
+          } else {
+            return (
+              <PlacedFurniture
+                key={item.id}
+                item={item}
+                selected={compareOriginal ? false : (selectedId === item.id)}
+                onSelect={onSelect}
+                onUpdate={onUpdatePlacedItem}
+                transformMode={transformMode}
+                isHardcodedDemo={isHardcodedDemo}
+                viewSettings={viewSettings}
+                demoSceneData={demoSceneData}
+                onDraggingChange={setIsDragging}
+                compareOriginal={compareOriginal}
+              />
+            );
+          }
+        })}
 
         {viewSettings.showGrid && (
           <gridHelper args={[15, 15, '#06b6d4', '#475569']} position={[0, viewSettings.floorHeight + 0.02, 0]} />
