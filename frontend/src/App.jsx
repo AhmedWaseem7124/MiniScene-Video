@@ -723,7 +723,7 @@ function App() {
     setRedoStack([]);
     
     // Update local state first
-    setSceneFurniture(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
+    setSceneFurniture(prev => prev.map(item => item.id === id ? { ...item, ...updates, edited: true } : item));
     
     // Sync to activeHouse
     if (activeHouse) {
@@ -734,7 +734,7 @@ function App() {
           if (hasFurniture) {
             return {
               ...room,
-              furniture: room.furniture.map(f => f.id === id ? { ...f, ...updates } : f)
+              furniture: room.furniture.map(f => f.id === id ? { ...f, ...updates, edited: true } : f)
             };
           }
           return room;
@@ -850,27 +850,58 @@ function App() {
       console.log("Added furniture size", size, scale);
 
       const height = size[1];
+      let targetRoomId = null;
+      let targetRoom = null;
+
+      // Identify which room contains the clicked point
+      if (activeHouse) {
+        targetRoomId = activeHouse.currentRoomId;
+        if (targetRoomId === 'whole_house') {
+          const clickedRoom = activeHouse.rooms.find(r => {
+            const roomW = r.room.dimensions.width;
+            const roomL = r.room.dimensions.length;
+            const [rx, ry, rz] = r.offset;
+            const minX = rx - roomW / 2;
+            const maxX = rx + roomW / 2;
+            const minZ = rz - roomL / 2;
+            const maxZ = rz + roomL / 2;
+            return point.x >= minX && point.x <= maxX && point.z >= minZ && point.z <= maxZ;
+          }) || activeHouse.rooms[0];
+          
+          if (clickedRoom) {
+            targetRoomId = clickedRoom.room_id;
+          }
+        }
+        targetRoom = activeHouse.rooms.find(r => r.room_id === targetRoomId);
+      }
+
+      // Default room dimensions and offset fallback
+      const roomW = targetRoom ? targetRoom.room.dimensions.width : (demoSceneData?.room?.dimensions?.width || 8.0);
+      const roomL = targetRoom ? targetRoom.room.dimensions.length : (demoSceneData?.room?.dimensions?.length || 8.0);
+      const roomH = targetRoom ? targetRoom.room.dimensions.height : (demoSceneData?.room?.dimensions?.height || 3.0);
+      const roomOffset = targetRoom ? targetRoom.offset : [0, 0, 0];
+
+      // Convert global coordinate to room-local coordinates
+      const localX = point.x - roomOffset[0];
+      const localZ = point.z - roomOffset[2];
+
       const FLOOR_Y = isHardcodedDemo ? 0 : (viewSettings.floorHeight || -2);
       
       let y = FLOOR_Y;
-      let finalX = point.x;
-      let finalZ = point.z;
+      let finalX = localX;
+      let finalZ = localZ;
       let finalRot = [0, 0, 0];
       
-      if (sceneType === 'scratch' && demoSceneData?.room?.dimensions) {
-        const roomW = demoSceneData.room.dimensions.width;
-        const roomL = demoSceneData.room.dimensions.length;
-        const roomH = demoSceneData.room.dimensions.height;
-        
+      if ((sceneType === 'scratch' || activeHouse) && roomW && roomL) {
         if (placementItem.placementType === 'ceiling' || type === 'PendantLight') {
           y = roomH - height / 2;
         } else if (placementItem.placementType === 'rug' || type === 'Rug') {
           y = 0.01;
         } else if (placementItem.placementType === 'wall' || type === 'Mirror' || type === 'Painting') {
           // Snap wall object to nearest wall surface (left, right, or back)
-          const distLeft = Math.abs(point.x - (-roomW / 2));
-          const distRight = Math.abs(point.x - (roomW / 2));
-          const distBack = Math.abs(point.z - (-roomL / 2));
+          const distLeft = Math.abs(localX - (-roomW / 2));
+          const distRight = Math.abs(localX - (roomW / 2));
+          const distBack = Math.abs(localZ - (-roomL / 2));
           const minDist = Math.min(distLeft, distRight, distBack);
           
           if (minDist === distLeft) {
@@ -885,7 +916,9 @@ function App() {
           }
           y = Math.max(height / 2, Math.min(roomH - height / 2, point.y !== undefined ? point.y : roomH * 0.65));
         } else {
-          // Floor furniture
+          // Floor furniture: clamp to boundaries inside the room
+          finalX = Math.max(-roomW / 2 + size[0] / 2, Math.min(roomW / 2 - size[0] / 2, localX));
+          finalZ = Math.max(-roomL / 2 + size[2] / 2, Math.min(roomL / 2 - size[2] / 2, localZ));
           y = height / 2;
         }
       } else {
@@ -917,6 +950,7 @@ function App() {
         confidence: 1.0,
         editable: true,
         detected: false,
+        edited: true, // Bypass CV alignment in alignRoomObjects
 
         originalPosition: [finalX, y, finalZ],
         originalRotation: finalRot,
@@ -924,8 +958,24 @@ function App() {
         originalColor: defaultColor,
         originalMaterial: placementItem.material || 'matte'
       };
+
       setHistory(h => [...h, JSON.stringify(sceneFurnitureRef.current)]);
       setRedoStack([]);
+
+      // Update activeHouse directly
+      if (activeHouse && targetRoomId) {
+        setActiveHouse(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            rooms: prev.rooms.map(r => r.room_id === targetRoomId ? {
+              ...r,
+              furniture: [...(r.furniture || []), newItem]
+            } : r)
+          };
+        });
+      }
+
       setSceneFurniture(prev => [...prev, newItem]);
       setPlacementItem(null);
       setSelectedId(newItem.id);

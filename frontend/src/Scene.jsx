@@ -2797,7 +2797,13 @@ export default function Scene({
                   placementMode={placementMode}
                   onSceneClick={(pt) => {
                     if (placementMode) {
-                      onSceneClick({ x: pt.x + room.offset[0], y: pt.y + room.offset[1], z: pt.z + room.offset[2] });
+                      const [sx, sy, sz] = sceneTransform.scale;
+                      const [px, py, pz] = sceneTransform.position;
+                      onSceneClick({
+                        x: (pt.x - px) / sx,
+                        y: (pt.y - py) / sy,
+                        z: (pt.z - pz) / sz
+                      });
                     }
                   }}
                   pcBounds={room.pcStats}
