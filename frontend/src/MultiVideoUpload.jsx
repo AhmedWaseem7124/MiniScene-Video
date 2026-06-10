@@ -192,7 +192,7 @@ export default function MultiVideoUpload({ onUpload, onClose }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       style={{
-        position: 'absolute', inset: 0, background: 'rgba(8,11,18,0.85)',
+        position: 'fixed', inset: 0, background: 'rgba(8,11,18,0.85)',
         backdropFilter: 'blur(12px)', zIndex: 100,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}

@@ -334,16 +334,8 @@ export default function FurnitureLibrary({ onClose, onSelect }) {
       animate={{ x: 0 }}
       exit={{ x: -440 }}
       transition={{ type: 'spring', stiffness: 280, damping: 28 }}
-      className="glass-panel"
+      className="glass-panel furniture-library-drawer"
       style={{ 
-        position: 'absolute', 
-        top: 0, 
-        left: 0, 
-        bottom: 0, 
-        zIndex: 50, 
-        width: 420,
-        boxShadow: '4px 0 24px rgba(0,0,0,0.5)',
-        borderRight: '1px solid rgba(255, 255, 255, 0.1)',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden'

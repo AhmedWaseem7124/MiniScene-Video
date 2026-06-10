@@ -53,7 +53,7 @@ export default function ProcessingStatus({ isProcessing, currentStage = 'recon',
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       style={{
-        position: 'absolute', inset: 0,
+        position: 'fixed', inset: 0,
         background: 'rgba(8, 11, 18, 0.95)',
         backdropFilter: 'blur(16px)',
         zIndex: 200, display: 'flex', flexDirection: 'column',

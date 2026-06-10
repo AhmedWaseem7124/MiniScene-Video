@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Trash2, Plus, Camera, Save, Download, X, Settings2, Film,
-  Footprints, Layers, MoreHorizontal, Activity, Ruler, Sparkles,
-  Network, Map, Copy, CheckCircle2, Sliders
+  Layers, MoreHorizontal, Activity, Ruler, Sparkles,
+  Network, Map, Copy, CheckCircle2, Sliders, SlidersHorizontal, ChevronDown, ChevronRight,
+  Menu
 } from 'lucide-react';
 import Scene from './Scene';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -15,8 +16,6 @@ import AnalyticsPanel from './AnalyticsPanel';
 import MeasurementPanel from './MeasurementPanel';
 import AssistantPanel from './AssistantPanel';
 import SceneGraphPanel from './SceneGraphPanel';
-import WalkablePanel from './WalkablePanel';
-import CVPanel from './CVPanel';
 import VideoUpload from './VideoUpload';
 import ProcessingStatus from './ProcessingStatus';
 import LandingHero from './LandingHero';
@@ -153,10 +152,10 @@ function App() {
   const objects = sceneFurniture.filter(item => item.detected);
   const placedItems = sceneFurniture.filter(item => !item.detected);
 
-  const [compareOriginal, setCompareOriginal] = useState(false);
   const [replacingObjectId, setReplacingObjectId] = useState(null);
   const [history, setHistory] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
+  const [expandedSection, setExpandedSection] = useState('furniture');
 
   const sceneFurnitureRef = useRef([]);
   useEffect(() => {
@@ -184,6 +183,7 @@ function App() {
   const [showAssistantPanel, setShowAssistantPanel] = useState(false);
   const [showGraphPanel, setShowGraphPanel] = useState(false);
   const [showWalkablePanel, setShowWalkablePanel] = useState(false);
+  const [showMobileLeftSidebar, setShowMobileLeftSidebar] = useState(false);
 
   const [roomAnalysis, setRoomAnalysis] = useState(null);
   const [scaleFactor, setScaleFactor] = useState(1.0);
@@ -274,12 +274,25 @@ function App() {
     showObjectDirections: false,
     showLabels: false,
     showCameraDebug: false,
+    showBoundingBoxes: false,
+    darkMode: true,
+    showRelationLines: false,
+    showWalkableOverlay: false,
   });
 
   // Clear old cache on load
   useEffect(() => {
     ['editedScene','removedObjects','repairPoints','generatedPoints','pointCloudEdits','sceneRepair'].forEach(k => localStorage.removeItem(k));
   }, []);
+
+  // Sync dark/light theme body class
+  useEffect(() => {
+    if (viewSettings.darkMode === false) {
+      document.body.classList.add('light-theme');
+    } else {
+      document.body.classList.remove('light-theme');
+    }
+  }, [viewSettings.darkMode]);
 
   const loadDemoScene = useCallback((data) => {
     if (!data) return;
@@ -578,6 +591,7 @@ function App() {
   }, [analysisUrl]);
 
   const handleSelectObject = (id) => {
+    setShowMobileLeftSidebar(false);
     if (distancePickerActive) {
       setDistancePickerObjects(prev => {
         if (prev.includes(id)) {
@@ -590,6 +604,24 @@ function App() {
       });
     } else {
       setSelectedId(id);
+      if (id !== null) {
+        setShowMeasurementPanel(false);
+        setShowAssistantPanel(false);
+        setShowWalkablePanel(false);
+        setShowGraphPanel(false);
+      }
+    }
+  };
+
+  const handleOpenUtilityPanel = (panelKey) => {
+    setShowMobileLeftSidebar(false);
+    setShowMeasurementPanel(panelKey === 'measurement');
+    setShowAssistantPanel(panelKey === 'assistant');
+    setShowWalkablePanel(panelKey === 'walkable');
+    setShowGraphPanel(panelKey === 'graph');
+    if (panelKey) {
+      setSelectedId(null);
+      setCurrentView('3d');
     }
   };
 
@@ -1552,6 +1584,7 @@ function App() {
   };
 
   const handleSwitchRoom = (roomId) => {
+    setShowMobileLeftSidebar(false);
     setActiveHouse(prev => {
       if (!prev) return prev;
       return {
@@ -2162,330 +2195,317 @@ function App() {
   const selectedItem = objects.find(o => o.id === selectedId) || placedItems.find(p => p.id === selectedId);
   const hasScene = processState === 'READY';
 
-  return (
-    <>
-      <ProcessingStatus 
-        isProcessing={isProcessing} 
-        currentStage={processingStage} 
-        elapsedSeconds={elapsedSeconds}
-        sessionId={sessionId}
-        isDemo={processState === 'PROCESSING_DEMO'}
-        onSkip={processState === 'PROCESSING_DEMO' ? null : () => {
-          console.warn("User skipped loading screen");
-          setProcessState('READY');
-          setSceneLoaded(true);
+  const renderAccordionHeader = (title, sectionKey, icon) => {
+    const isExpanded = expandedSection === sectionKey;
+    return (
+      <div 
+        onClick={() => setExpandedSection(isExpanded ? null : sectionKey)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '12px 16px',
+          background: isExpanded ? 'rgba(255,255,255,0.03)' : 'transparent',
+          borderBottom: '1px solid var(--border)',
+          cursor: 'pointer',
+          userSelect: 'none',
+          transition: 'all 0.2s ease'
         }}
-      />
-
-      {/* Left sidebar — Design Panel */}
-      {!presentationMode && hasScene && (
-        <div className="glass-panel">
-        {/* Branding */}
-        <div className="header">
-          <h1>MiniScene AI</h1>
-          <p>Video → 3D Room → Interior Design</p>
-          <div style={{ marginTop: 8 }}>
-            <span className="cv-badge">🤖 CV-Powered Reconstruction</span>
-          </div>
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.78rem', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: isExpanded ? 'var(--teal)' : 'var(--text-main)' }}>
+          {icon}
+          <span>{title}</span>
         </div>
+        {isExpanded ? <ChevronDown size={14} color="var(--text-muted)" /> : <ChevronRight size={14} color="var(--text-muted)" />}
+      </div>
+    );
+  };
 
-        {/* Add furniture CTA */}
-        {hasScene && (
-          <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
-            <button
-              className="btn-teal"
-              style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
-              onClick={() => setShowLibrary(true)}
-            >
-              <Plus size={18} /> Add Furniture
-            </button>
+    return (
+      <div className={`app-shell ${showMobileLeftSidebar ? 'mobile-left-sidebar-open' : ''} ${!presentationMode && hasScene ? 'has-left-sidebar' : ''} ${!presentationMode && hasScene && (showMeasurementPanel || showAssistantPanel || showGraphPanel || selectedItem) ? 'has-right-inspector' : ''}`}>
+        <ProcessingStatus 
+          isProcessing={isProcessing} 
+          currentStage={processingStage} 
+          elapsedSeconds={elapsedSeconds}
+          sessionId={sessionId}
+          isDemo={processState === 'PROCESSING_DEMO'}
+          onSkip={processState === 'PROCESSING_DEMO' ? null : () => {
+            console.warn("User skipped loading screen");
+            setProcessState('READY');
+            setSceneLoaded(true);
+          }}
+        />
+  
+        {/* Left sidebar — Design Panel */}
+        {!presentationMode && hasScene && (
+          <div className="glass-panel left-sidebar">
+          {/* Branding */}
+          <div className="header" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
+            <h1 style={{ fontSize: '1.25rem', marginBottom: '2px', lineHeight: 1.2 }}>MiniScene AI</h1>
+            <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: 0 }}>Video → 3D Room → Interior Design</p>
+            <div style={{ marginTop: 6 }}>
+              <span className="cv-badge" style={{ fontSize: '0.68rem', padding: '2px 6px' }}>🤖 CV-Powered Reconstruction</span>
+            </div>
           </div>
-        )}
 
-        {/* Furniture list */}
-        <div className="object-list">
-                  {/* Detected objects */}
-          {objects.length > 0 && (
-            <>
-              <div className="section-label"
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-              >
-                <span>Detected Objects</span>
-                <span style={{ fontSize: '0.72rem', background: 'rgba(6,182,212,0.15)', color: '#06b6d4', padding: '1px 7px', borderRadius: 10, border: '1px solid rgba(6,182,212,0.25)' }}>
-                  {objects.length} found
-                </span>
-              </div>
-              <AnimatePresence>
-                {objects.map(obj => {
-                  const emoji = FURNITURE_EMOJIS[obj.label] ||
-                    {
-                      person: '🧍', tv: '📺', monitor: '🖥️', laptop: '💻', bottle: '🍶',
-                      cup: '☕', book: '📖', lamp: '💡', light: '💡', rug: '🟪', carpet: '🟪',
-                      mirror: '🪞', painting: '🖼️', 'wall art': '🖼️', curtain: '🎪',
-                      shelf: '📚', cupboard: '🚪', wardrobe: '🚪', cabinet: '🚪',
-                      refrigerator: '🧊', microwave: '📻', oven: '🔥', sink: '🚰',
-                      vase: '🏺', clock: '🕰️', window: '🪟', door: '🚪', chair: '🪑',
-                      couch: '🛋️', sofa: '🛋️', bench: '🛋️', table: '🪵', 'dining table': '🪵',
-                      bed: '🛏️', plant: '🌿', 'potted plant': '🌿', pillow: '🛌', blanket: '🛌'
-                    }[obj.label?.toLowerCase()] ||
-                    '📦';
-                  return (
-                    <motion.div
-                      key={obj.id}
-                      initial={{ opacity: 0, x: -16 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, scale: 0.9 }}
-                      className={`object-item ${selectedId === obj.id ? 'selected' : ''}`}
-                      onClick={() => setSelectedId(obj.id)}
-                    >
-                      <div className="object-info">
-                        <div className="object-icon" style={{ fontSize: '1.15rem' }}>{emoji}</div>
-                        <div className="object-details">
-                          <h3 style={{ textTransform: 'capitalize', display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px' }}>
-                            <span>{obj.label}</span>
-                            {obj.observations && obj.observations > 1 && (
-                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 400, textTransform: 'none' }}>
-                                — observed in {obj.observations} frames
-                              </span>
-                            )}
-                          </h3>
-                          <p style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                            <span style={{ background: 'rgba(6,182,212,0.12)', color: '#06b6d4', padding: '0px 5px', borderRadius: 6, fontSize: '0.7rem' }}>
-                              {Math.round((obj.confidence || 0) * 100)}% conf
-                            </span>
-                            <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>AI detected</span>
-                          </p>
+          {/* Accordion container */}
+          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+            
+            {/* Section 1: Furniture Library */}
+            <div style={{ borderBottom: '1px solid var(--border)' }}>
+              {renderAccordionHeader('Furniture Library', 'furniture', <Plus size={15} />)}
+              {expandedSection === 'furniture' && (
+                <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <button
+                    className="btn-teal"
+                    style={{ width: '100%', justifyContent: 'center', padding: '10px' }}
+                    onClick={() => setShowLibrary(true)}
+                  >
+                    <Plus size={18} /> Add Furniture
+                  </button>
+                  <div className="object-list" style={{ padding: 0, overflow: 'visible', maxHeight: '42vh', overflowY: 'auto' }}>
+                    {/* Detected objects */}
+                    {objects.length > 0 && (
+                      <>
+                        <div className="section-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 0 }}>
+                          <span>Detected Objects</span>
+                          <span style={{ fontSize: '0.72rem', background: 'rgba(6,182,212,0.15)', color: '#06b6d4', padding: '1px 7px', borderRadius: 10, border: '1px solid rgba(6,182,212,0.25)' }}>
+                            {objects.length}
+                          </span>
+                        </div>
+                        <AnimatePresence>
+                          {objects.map(obj => {
+                            const emoji = FURNITURE_EMOJIS[obj.label] || '📦';
+                            return (
+                              <motion.div
+                                key={obj.id}
+                                initial={{ opacity: 0, x: -16 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, scale: 0.9 }}
+                                className={`object-item ${selectedId === obj.id ? 'selected' : ''}`}
+                                onClick={() => setSelectedId(obj.id)}
+                              >
+                                <div className="object-info">
+                                  <div className="object-icon" style={{ fontSize: '1.15rem' }}>{emoji}</div>
+                                  <div className="object-details">
+                                    <h3 style={{ textTransform: 'capitalize' }}>{obj.label}</h3>
+                                    <p style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                      <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>AI detected</span>
+                                    </p>
+                                  </div>
+                                </div>
+                                <button className="action-btn" onClick={e => { e.stopPropagation(); handleDeleteObject(obj.id); }}><Trash2 size={15} /></button>
+                              </motion.div>
+                            );
+                          })}
+                        </AnimatePresence>
+                      </>
+                    )}
+
+                    {/* No objects banner */}
+                    {objects.length === 0 && sceneLoaded && (
+                      <div style={{ margin: '8px 0', padding: '10px 12px', background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8 }}>
+                        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#fbbf24', marginBottom: 3 }}>No objects detected</div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                          Try placing furniture from library manually.
                         </div>
                       </div>
-                      <button className="action-btn" onClick={e => { e.stopPropagation(); handleDeleteObject(obj.id); }}><Trash2 size={15} /></button>
-                    </motion.div>
-                  );
-                })}
-              </AnimatePresence>
-            </>
-          )}
+                    )}
 
-          {/* No objects banner — shown after a scene loads but detection found nothing */}
-          {objects.length === 0 && sceneLoaded && (
-            <div style={{ margin: '8px 0', padding: '10px 12px', background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 8 }}>
-              <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#fbbf24', marginBottom: 3 }}>No objects detected</div>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                Try <strong style={{ color: 'var(--text-main)' }}>Fast + Objects</strong> mode or
-                <strong style={{ color: 'var(--text-main)' }}> Quality</strong> mode for better detection.
-              </div>
-            </div>
-          )}
-          {placedItems.length > 0 && (
-            <>
-              <div className="section-label" style={{ marginTop: objects.length > 0 ? 8 : 0 }}>Placed Furniture</div>
-              <AnimatePresence>
-                {placedItems.map(item => (
-                  <motion.div
-                    key={item.id}
-                    initial={{ opacity: 0, x: -16 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, scale: 0.9 }}
-                    className={`object-item ${selectedId === item.id ? 'selected' : ''}`}
-                    onClick={() => setSelectedId(item.id)}
-                  >
-                    <div className="object-info">
-                      <div className="object-icon" style={{ fontSize: '1.2rem' }}>{FURNITURE_EMOJIS[item.type] || '🪑'}</div>
-                      <div className="object-details">
-                        <h3>{item.name}</h3>
-                        <p>{item.type}</p>
+                    {placedItems.length > 0 && (
+                      <>
+                        <div className="section-label" style={{ marginTop: objects.length > 0 ? 12 : 0 }}>Placed Furniture</div>
+                        <AnimatePresence>
+                          {placedItems.map(item => (
+                            <motion.div
+                              key={item.id}
+                              initial={{ opacity: 0, x: -16 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              exit={{ opacity: 0, scale: 0.9 }}
+                              className={`object-item ${selectedId === item.id ? 'selected' : ''}`}
+                              onClick={() => setSelectedId(item.id)}
+                            >
+                              <div className="object-info">
+                                <div className="object-icon" style={{ fontSize: '1.2rem' }}>{FURNITURE_EMOJIS[item.type] || '🪑'}</div>
+                                <div className="object-details">
+                                  <h3>{item.name}</h3>
+                                  <p>{item.type}</p>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', gap: 2 }}>
+                                <button className="action-btn" title="Duplicate" onClick={e => { e.stopPropagation(); handleDuplicatePlaced(item); }} style={{ color: 'var(--text-muted)' }}>
+                                  <Copy size={14} />
+                                </button>
+                                <button className="action-btn" onClick={e => { e.stopPropagation(); handleDeleteObject(item.id); }}>
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </motion.div>
+                          ))}
+                        </AnimatePresence>
+                      </>
+                    )}
+
+                    {objects.length === 0 && placedItems.length === 0 && (
+                      <div style={{ textAlign: 'center', padding: '1.5rem 1rem', color: 'var(--text-muted)' }}>
+                        <p style={{ fontSize: '0.85rem' }}>No furniture yet.</p>
+                        <p style={{ fontSize: '0.78rem', marginTop: 6 }}>Click "Add Furniture" to place items.</p>
                       </div>
-                    </div>
-                    <div style={{ display: 'flex', gap: 2 }}>
-                      <button className="action-btn" title="Duplicate" onClick={e => { e.stopPropagation(); handleDuplicatePlaced(item); }} style={{ color: 'var(--text-muted)' }}>
-                        <Copy size={14} />
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Section 2: Room Navigator */}
+            {hasScene && activeHouse && (
+              <div style={{ borderBottom: '1px solid var(--border)' }}>
+                {renderAccordionHeader('Room Navigator', 'navigator', <Map size={15} />)}
+                {expandedSection === 'navigator' && (
+                  <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <button
+                      onClick={() => handleSwitchRoom('whole_house')}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: 8,
+                        background: activeHouse.currentRoomId === 'whole_house' ? 'rgba(6,182,212,0.15)' : 'rgba(255,255,255,0.02)',
+                        border: `1px solid ${activeHouse.currentRoomId === 'whole_house' ? 'var(--teal)' : 'var(--border)'}`,
+                        color: activeHouse.currentRoomId === 'whole_house' ? 'var(--teal)' : 'var(--text-main)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        fontSize: '0.82rem',
+                        fontWeight: 600,
+                        width: '100%',
+                        textAlign: 'left'
+                      }}
+                    >
+                      🏠 Whole House
+                    </button>
+                    {activeHouse.rooms.map(room => {
+                      const isSelected = activeHouse.currentRoomId === room.room_id;
+                      const icon = {
+                        living_room: '🛋️',
+                        bedroom: '🛏️',
+                        kitchen: '🍳',
+                        dining_room: '🪵',
+                        office: '💻',
+                        bathroom: '🚰',
+                        balcony: '🌿',
+                        hallway: '🚪',
+                      }[room.room_id.split('_')[0]] || '🚪';
+
+                      return (
+                        <button
+                          key={room.room_id}
+                          onClick={() => handleSwitchRoom(room.room_id)}
+                          style={{
+                            padding: '8px 12px',
+                            borderRadius: 8,
+                            background: isSelected ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.02)',
+                            border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
+                            color: isSelected ? 'var(--accent)' : 'var(--text-main)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            fontSize: '0.82rem',
+                            fontWeight: isSelected ? 600 : 400,
+                            width: '100%',
+                            textAlign: 'left',
+                            paddingLeft: 20
+                          }}
+                        >
+                          <span>{icon}</span>
+                          <span>{room.room_name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Section 3: AI Interior Themes */}
+            {hasScene && activeHouse && (
+              <div style={{ borderBottom: '1px solid var(--border)' }}>
+                {renderAccordionHeader('AI Interior Themes', 'themes', <Sparkles size={15} />)}
+                {expandedSection === 'themes' && (
+                  <div style={{ padding: '12px', display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
+                    {[
+                      { key: 'scandinavian', name: 'Scandinavian', emoji: '🌲' },
+                      { key: 'luxury', name: 'Luxury Marble', emoji: '👑' },
+                      { key: 'minimal', name: 'Minimalist', emoji: '◽' },
+                      { key: 'modern', name: 'Modern Slate', emoji: '📐' },
+                      { key: 'japanese', name: 'Zen Wooden', emoji: '🎋' },
+                      { key: 'industrial', name: 'Industrial', emoji: '🏭' },
+                      { key: 'contemporary', name: 'Contemporary', emoji: '🎨' },
+                    ].map(theme => (
+                      <button
+                        key={theme.key}
+                        onClick={() => handleApplyTheme(theme.key, 'house')}
+                        style={{
+                          padding: '6px 8px',
+                          borderRadius: 6,
+                          background: 'rgba(255,255,255,0.03)',
+                          border: '1px solid var(--border)',
+                          color: 'var(--text-main)',
+                          fontSize: '0.75rem',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          justifyContent: 'center',
+                          transition: 'all 0.2s'
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--teal)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
+                      >
+                        <span>{theme.emoji}</span>
+                        <span>{theme.name}</span>
                       </button>
-                      <button className="action-btn" onClick={e => { e.stopPropagation(); handleDeleteObject(item.id); }}>
-                        <Trash2 size={14} />
-                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Section 4: Project Manager */}
+            {hasScene && (
+              <div style={{ borderBottom: '1px solid var(--border)' }}>
+                {renderAccordionHeader('Project Manager', 'project', <Sliders size={15} />)}
+                {expandedSection === 'project' && (
+                  <div style={{ padding: '12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <button
+                      className="btn-primary"
+                      style={{ fontSize: '0.78rem', padding: '8px', justifyContent: 'center', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', width: '100%' }}
+                      onClick={handleLoadSavedProject}
+                    >
+                      📂 Load Saved Project
+                    </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Presets:</span>
+                      <select
+                        onChange={(e) => {
+                          if (e.target.value) handleLoadProject(e.target.value);
+                        }}
+                        defaultValue=""
+                        style={{ background: '#0e121c', color: 'white', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: '0.75rem', outline: 'none', flex: 1 }}
+                      >
+                        <option value="" disabled>-- Select Preset --</option>
+                        <option value="apartment">My Apartment</option>
+                        <option value="villa">Luxury Villa</option>
+                        <option value="office">Office Layout</option>
+                      </select>
                     </div>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-            </>
-          )}
+                  </div>
+                )}
+              </div>
+            )}
 
-          {/* Empty state */}
-          {objects.length === 0 && placedItems.length === 0 && (
-            <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-muted)' }}>
-              {hasScene
-                ? <><p style={{ fontSize: '0.85rem' }}>No furniture yet.</p><p style={{ fontSize: '0.78rem', marginTop: 6 }}>Click "Add Furniture" to place items.</p></>
-                : <><p style={{ fontSize: '0.85rem' }}>Upload a room video to begin.</p><p style={{ fontSize: '0.78rem', marginTop: 6 }}>AI will reconstruct your space in 3D.</p></>
-              }
-            </div>
-          )}
+          </div>
         </div>
-
-        {/* Room Navigator Sidebar Section */}
-        {hasScene && activeHouse && (
-          <div style={{ padding: '14px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Room Navigator</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-              <button
-                onClick={() => handleSwitchRoom('whole_house')}
-                style={{
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  background: activeHouse.currentRoomId === 'whole_house' ? 'rgba(6,182,212,0.15)' : 'rgba(255,255,255,0.02)',
-                  border: `1px solid ${activeHouse.currentRoomId === 'whole_house' ? 'var(--teal)' : 'var(--border)'}`,
-                  color: activeHouse.currentRoomId === 'whole_house' ? 'var(--teal)' : 'var(--text-main)',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontSize: '0.82rem',
-                  fontWeight: 600,
-                  width: '100%',
-                  textAlign: 'left'
-                }}
-              >
-                🏠 Whole House
-              </button>
-              {activeHouse.rooms.map(room => {
-                const isSelected = activeHouse.currentRoomId === room.room_id;
-                const icon = {
-                  living_room: '🛋️',
-                  bedroom: '🛏️',
-                  kitchen: '🍳',
-                  dining_room: '🪵',
-                  office: '💻',
-                  bathroom: '🚰',
-                  balcony: '🌿',
-                  hallway: '🚪',
-                }[room.room_id.split('_')[0]] || '🚪';
-
-                return (
-                  <button
-                    key={room.room_id}
-                    onClick={() => handleSwitchRoom(room.room_id)}
-                    style={{
-                      padding: '8px 12px',
-                      borderRadius: 8,
-                      background: isSelected ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.02)',
-                      border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'}`,
-                      color: isSelected ? 'var(--accent)' : 'var(--text-main)',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: '0.82rem',
-                      fontWeight: isSelected ? 600 : 400,
-                      width: '100%',
-                      textAlign: 'left',
-                      paddingLeft: 20
-                    }}
-                  >
-                    <span>{icon}</span>
-                    <span>{room.room_name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* AI Interior Themes */}
-        {hasScene && activeHouse && (
-          <div style={{ padding: '14px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>AI Interior Themes</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6 }}>
-              {[
-                { key: 'scandinavian', name: 'Scandinavian', emoji: '🌲' },
-                { key: 'luxury', name: 'Luxury Marble', emoji: '👑' },
-                { key: 'minimal', name: 'Minimalist', emoji: '◽' },
-                { key: 'modern', name: 'Modern Slate', emoji: '📐' },
-                { key: 'japanese', name: 'Zen Wooden', emoji: '🎋' },
-                { key: 'industrial', name: 'Industrial', emoji: '🏭' },
-                { key: 'contemporary', name: 'Contemporary', emoji: '🎨' },
-              ].map(theme => (
-                <button
-                  key={theme.key}
-                  onClick={() => handleApplyTheme(theme.key, 'house')}
-                  style={{
-                    padding: '6px 8px',
-                    borderRadius: 6,
-                    background: 'rgba(255,255,255,0.03)',
-                    border: '1px solid var(--border)',
-                    color: 'var(--text-main)',
-                    fontSize: '0.75rem',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 4,
-                    justifyContent: 'center',
-                    transition: 'all 0.2s'
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--teal)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; }}
-                >
-                  <span>{theme.emoji}</span>
-                  <span>{theme.name}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Project Manager Section */}
-        {hasScene && (
-          <div style={{ padding: '14px', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Project Manager</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              <button
-                className="btn-primary"
-                style={{ fontSize: '0.78rem', padding: '8px', justifyContent: 'center', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)' }}
-                onClick={handleSave}
-              >
-                💾 Save Layout
-              </button>
-              <button
-                className="btn-primary"
-                style={{ fontSize: '0.78rem', padding: '8px', justifyContent: 'center', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)' }}
-                onClick={handleLoadSavedProject}
-              >
-                📂 Load Saved
-              </button>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Presets:</span>
-              <select
-                onChange={(e) => {
-                  if (e.target.value) handleLoadProject(e.target.value);
-                }}
-                defaultValue=""
-                style={{ background: '#0e121c', color: 'white', border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: '0.75rem', outline: 'none', flex: 1 }}
-              >
-                <option value="" disabled>-- Select Preset --</option>
-                <option value="apartment">My Apartment</option>
-                <option value="villa">Luxury Villa</option>
-                <option value="office">Office Layout</option>
-              </select>
-            </div>
-          </div>
-        )}
-
-        {/* Bottom actions */}
-        <div style={{ padding: 12, borderTop: '1px solid var(--border)', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-          <button
-            className="action-btn"
-            style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)', color: 'var(--text-main)', fontSize: '0.82rem', padding: '8px', gap: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            onClick={handleSave}
-          >
-            <Save size={15} /> Save
-          </button>
-          <button
-            className="action-btn"
-            style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 8, border: '1px solid var(--border)', color: 'var(--text-main)', fontSize: '0.82rem', padding: '8px', gap: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-            onClick={() => setShowExportModal(true)}
-          >
-            <Download size={15} /> Export
-          </button>
-        </div>
-      </div>
       )}
 
       {/* 3D Canvas */}
@@ -2493,6 +2513,32 @@ function App() {
         opacity: ['READY', 'IDLE'].includes(processState) ? 1 : 0,
         transition: 'opacity 0.4s ease-in-out'
       }}>
+        {hasScene && !presentationMode && (
+          <button 
+            className="mobile-menu-btn" 
+            onClick={() => setShowMobileLeftSidebar(prev => !prev)}
+            style={{
+              position: 'absolute',
+              top: 15,
+              left: 15,
+              zIndex: 40,
+              background: 'var(--bg-panel)',
+              backdropFilter: 'blur(16px)',
+              border: '1px solid var(--border)',
+              borderRadius: '50%',
+              width: 40,
+              height: 40,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              color: 'var(--text-main)',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}
+          >
+            <Menu size={20} />
+          </button>
+        )}
         {/* Landing hero — shown when no scene */}
         {!hasScene && !isProcessing && (
           <LandingHero
@@ -2565,13 +2611,8 @@ function App() {
               distancePickerObjects={distancePickerObjects}
               isHardcodedDemo={isHardcodedDemo}
               demoSceneData={demoSceneData}
-              showCameraDebug={
-                viewSettings.showCameraDebug &&
-                !showLibrary &&
-                !showVideoUpload &&
-                !(typeof process !== 'undefined' && process.env?.NODE_ENV === 'production' || import.meta.env?.PROD || import.meta.env?.MODE === 'production')
-              }
-              compareOriginal={compareOriginal}
+              showCameraDebug={false}
+              compareOriginal={false}
               activeHouse={activeHouse}
               presentationMode={presentationMode}
             />
@@ -2581,198 +2622,128 @@ function App() {
         {/* ─── Primary Toolbar ─── */}
         {hasScene && !presentationMode ? (
           <div className="controls-overlay glass">
+            {/* Group 1: Upload Video, Add Furniture */}
             {/* Upload */}
             <button
-              className="btn-primary"
-              style={{ background: 'var(--teal)', color: 'white', border: 'none' }}
+              className="dock-button dock-btn-cyan"
               onClick={() => setShowVideoUpload(true)}
+              title="Upload Video"
             >
-              <Film size={17} /> Upload Video
+              <Film size={20} />
+              <span className="dock-label">Upload Video</span>
             </button>
-
-            <div className="toolbar-divider" />
 
             {/* Add Furniture */}
             <button
-              className="btn-primary"
-              style={{ background: hasScene ? 'var(--accent)' : 'rgba(255,255,255,0.07)', border: '1px solid var(--border)' }}
+              className="dock-button dock-btn-purple"
               onClick={() => setShowLibrary(true)}
+              title="Add Furniture"
             >
-              <Plus size={17} /> Add Furniture
+              <Plus size={20} />
+              <span className="dock-label">Add Furniture</span>
             </button>
-
-            {hasScene && (
-              <>
-                <div className="toolbar-divider" />
-                {/* Compare Original */}
-                <button
-                  className="btn-primary"
-                  style={{
-                    background: compareOriginal ? 'rgba(6,182,212,0.2)' : 'transparent',
-                    border: `1px solid ${compareOriginal ? 'var(--teal)' : 'var(--border)'}`,
-                    color: compareOriginal ? 'var(--teal)' : 'var(--text-main)',
-                  }}
-                  onClick={() => setCompareOriginal(prev => !prev)}
-                  title="Compare current layout with original layout"
-                >
-                  <Sliders size={17} /> Compare Original
-                </button>
-
-                <div className="toolbar-divider" />
-                {/* Room Settings */}
-                <button
-                  className="btn-primary"
-                  style={{ background: showRoomSettings ? 'rgba(255,255,255,0.12)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-                  onClick={() => setShowRoomSettings(s => !s)}
-                  title="Room settings and dimensions"
-                >
-                  <Sliders size={17} /> Room Settings
-                </button>
-
-                <div className="toolbar-divider" />
-                {/* Save */}
-                <button
-                  className="btn-primary"
-                  style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-                  onClick={handleSave}
-                >
-                  <Save size={17} /> Save
-                </button>
-                {/* Export */}
-                <button
-                  className="btn-primary"
-                  style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-                  onClick={() => setShowExportModal(true)}
-                >
-                  <Download size={17} /> Export
-                </button>
-              </>
-            )}
 
             <div className="toolbar-divider" />
 
-            {/* Camera modes */}
+            {/* Group 2: Measurements, AI Assistant, Walkable, Scene Graph */}
+            {/* Measurements */}
             <button
-              className="btn-primary"
-              style={{ background: cameraMode === 'orbit' ? 'rgba(255,255,255,0.12)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-              onClick={() => setCameraMode('orbit')}
+              className={`dock-button dock-btn-glass${showMeasurementPanel ? ' active-teal' : ''}`}
+              onClick={() => handleOpenUtilityPanel(showMeasurementPanel ? null : 'measurement')}
+              title="Room and object measurements"
             >
-              <Camera size={17} /> Orbit
-            </button>
-            <button
-              className="btn-primary"
-              style={{ background: cameraMode === 'walk' ? 'rgba(6,182,212,0.2)' : 'transparent', border: `1px solid ${cameraMode === 'walk' ? 'var(--teal)' : 'var(--border)'}`, color: cameraMode === 'walk' ? 'var(--teal)' : 'var(--text-main)' }}
-              onClick={() => setCameraMode('walk')}
-            >
-              <Footprints size={17} /> Walk
+              <Ruler size={20} />
+              <span className="dock-label">Measurements</span>
             </button>
 
-            {hasScene && activeHouse && (
-              <>
-                <div className="toolbar-divider" />
-                {/* Floor Plan */}
-                <button
-                  className="btn-primary"
-                  style={{
-                    background: currentView === 'floorplan' ? 'rgba(6,182,212,0.2)' : 'transparent',
-                    border: `1px solid ${currentView === 'floorplan' ? 'var(--teal)' : 'var(--border)'}`,
-                    color: currentView === 'floorplan' ? 'var(--teal)' : 'var(--text-main)',
-                  }}
-                  onClick={() => setCurrentView(prev => prev === '3d' ? 'floorplan' : '3d')}
-                  title="View 2D CAD Floor Plan Layout"
-                >
-                  📐 Floor Plan
-                </button>
-              </>
-            )}
+            {/* AI Assistant */}
+            <button
+              className={`dock-button dock-btn-glass${showAssistantPanel ? ' active-amber' : ''}`}
+              onClick={() => handleOpenUtilityPanel(showAssistantPanel ? null : 'assistant')}
+              title="Design feedback and recommendations"
+            >
+              <Sparkles size={20} />
+              <span className="dock-label">Assistant</span>
+            </button>
 
-            {hasScene && (
-              <>
-                <div className="toolbar-divider" />
-                {/* Presentation Mode */}
-                <button
-                  className="btn-primary"
-                  style={{
-                    background: presentationMode ? 'rgba(6,182,212,0.2)' : 'transparent',
-                    border: `1px solid ${presentationMode ? 'var(--teal)' : 'var(--border)'}`,
-                    color: presentationMode ? 'var(--teal)' : 'var(--text-main)',
-                  }}
-                  onClick={() => setPresentationMode(prev => !prev)}
-                  title="Toggle Presentation Mode (Hides labels and debug elements)"
-                >
-                  🎭 Presentation
-                </button>
-              </>
-            )}
+
+
+            {/* Scene Graph */}
+            <button
+              className={`dock-button dock-btn-glass${showGraphPanel ? ' active-pink' : ''}`}
+              onClick={() => handleOpenUtilityPanel(showGraphPanel ? null : 'graph')}
+              title="Object relationships graph"
+            >
+              <Network size={20} />
+              <span className="dock-label">Graph</span>
+            </button>
+
+            {/* Floor Plan */}
+            <button
+              className={`dock-button dock-btn-glass${currentView === 'floorplan' ? ' active-teal' : ''}`}
+              onClick={() => {
+                if (currentView === 'floorplan') {
+                  setCurrentView('3d');
+                } else {
+                  setCurrentView('floorplan');
+                  handleOpenUtilityPanel(null);
+                }
+              }}
+              title="Floor Plan"
+            >
+              <Map size={20} />
+              <span className="dock-label">Floor Plan</span>
+            </button>
 
             <div className="toolbar-divider" />
 
-            {/* Fit Scene */}
+            {/* Group 3: Room Settings, Save, Export, View Settings (Cog) */}
+            {/* Room Settings */}
             <button
-              className="btn-primary"
-              style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
-              onClick={() => setFitTrigger(f => f + 1)}
-              title="Fit scene to camera"
+              className={`dock-button dock-btn-glass${showRoomSettings ? ' active-white' : ''}`}
+              onClick={() => setShowRoomSettings(s => !s)}
+              title="Room settings and dimensions"
             >
-              <Camera size={17} />
+              <SlidersHorizontal size={20} />
+              <span className="dock-label">Room Settings</span>
+            </button>
+
+            {/* Save */}
+            <button
+              className="dock-button dock-btn-glass"
+              onClick={handleSave}
+              title="Save project"
+            >
+              <Save size={20} />
+              <span className="dock-label">Save</span>
+            </button>
+
+            {/* Export */}
+            <button
+              className="dock-button dock-btn-glass"
+              onClick={() => setShowExportModal(true)}
+              title="Export room"
+            >
+              <Download size={20} />
+              <span className="dock-label">Export</span>
             </button>
 
             {/* View Settings */}
             <button
-              className="btn-primary"
-              style={{ background: showViewSettings ? 'rgba(255,255,255,0.1)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-main)' }}
+              className={`dock-button dock-btn-glass${showViewSettings ? ' active-white' : ''}`}
               onClick={() => setShowViewSettings(s => !s)}
+              title="View Options"
             >
-              <Settings2 size={17} />
+              <Settings2 size={20} />
+              <span className="dock-label">View Settings</span>
             </button>
-
-            {/* CV Pipeline */}
-            <button
-              className="btn-primary"
-              style={{ background: showCVPanel ? 'rgba(236,72,153,0.15)' : 'transparent', border: `1px solid ${showCVPanel ? 'rgba(236,72,153,0.5)' : 'var(--border)'}`, color: showCVPanel ? '#f472b6' : 'var(--text-muted)' }}
-              onClick={() => setShowCVPanel(s => !s)}
-              title="How this scene was built"
-            >
-              <Layers size={17} /> CV
-            </button>
-
-            <div className="toolbar-divider" />
-
-            {/* More menu */}
-            <div style={{ position: 'relative' }}>
-              <button
-                className="btn-primary"
-                style={{ background: showMoreMenu ? 'rgba(255,255,255,0.1)' : 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
-                onClick={() => setShowMoreMenu(m => !m)}
-              >
-                <MoreHorizontal size={17} /> More
-              </button>
-              {showMoreMenu && (
-                <div style={{ position: 'absolute', bottom: '110%', right: 0, background: 'rgba(14,18,28,0.97)', border: '1px solid var(--border)', borderRadius: 12, padding: 8, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 160, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
-                  {[
-                    { label: 'Semantics', icon: <Activity size={15} />, key: 'semantic', set: setShowSemanticPanel, val: showSemanticPanel, color: '#a78bfa' },
-                    { label: 'Measure', icon: <Ruler size={15} />, key: 'measurement', set: setShowMeasurementPanel, val: showMeasurementPanel, color: '#06b6d4' },
-                    { label: 'Assistant', icon: <Sparkles size={15} />, key: 'assistant', set: setShowAssistantPanel, val: showAssistantPanel, color: '#f59e0b' },
-                    { label: 'Scene Graph', icon: <Network size={15} />, key: 'graph', set: setShowGraphPanel, val: showGraphPanel, color: '#ec4899' },
-                    { label: 'Walkable', icon: <Map size={15} />, key: 'walkable', set: setShowWalkablePanel, val: showWalkablePanel, color: '#22c55e' },
-                  ].map(item => (
-                    <button key={item.key}
-                      onClick={() => { item.set(v => !v); setShowMoreMenu(false); }}
-                      style={{ padding: '8px 12px', background: item.val ? `${item.color}18` : 'transparent', border: `1px solid ${item.val ? item.color + '44' : 'transparent'}`, borderRadius: 8, color: item.val ? item.color : 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.82rem', width: '100%', textAlign: 'left' }}
-                    >
-                      {item.icon}{item.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
           </div>
         ) : hasScene && presentationMode ? (
           <button
             onClick={() => setPresentationMode(false)}
             style={{
               position: 'absolute',
-              bottom: 20,
+              bottom: 32,
               right: 20,
               zIndex: 100,
               background: 'rgba(14,18,28,0.9)',
@@ -2816,23 +2787,9 @@ function App() {
           <ViewSettings
             settings={viewSettings}
             setSettings={setViewSettings}
-            repairMode={repairMode}
-            onToggleRepairMode={() => setRepairMode(r => !r)}
+            presentationMode={presentationMode}
+            setPresentationMode={setPresentationMode}
             onClose={() => setShowViewSettings(false)}
-            onAutoFit={() => setViewSettings(s => ({ ...s, roomScale: 1, floorHeight: -2 }))}
-            onReset={() => {
-              setViewSettings({ viewMode: 'hybrid', pointSize: 0.015, pointOpacity: 0.85, wallOpacity: 0.5, floorHeight: -2, roomScale: 1, showGrid: false, showWalls: true, showCeiling: false, showOriginalPointCloud: true, showRepairPoints: false, showEditedPointCloud: false, showObjectDebug: false, showObjectDirections: false, showLabels: false, showCameraDebug: false });
-              setRepairMode(false);
-            }}
-            onResetCache={() => { setRemovedObjects([]); }}
-          />
-        )}
-
-        {showCVPanel && (
-          <CVPanel
-            onClose={() => setShowCVPanel(false)}
-            sessionStats={sessionStats}
-            objectDetectionMetadata={objectDetectionMetadata}
           />
         )}
 
@@ -2842,60 +2799,82 @@ function App() {
         {showAnalyticsPanel && (
           <AnalyticsPanel objects={objects} placedItems={placedItems} settings={viewSettings} onClose={() => setShowAnalyticsPanel(false)} url={analysisUrl} />
         )}
-        {showMeasurementPanel && (
-          <MeasurementPanel
-            objects={objects}
-            placedItems={placedItems}
-            selectedId={selectedId}
-            onSelect={handleSelectObject}
-            roomAnalysis={roomAnalysis}
-            pcStats={pcStats}
-            scaleFactor={scaleFactor}
-            calibrationInfo={calibrationInfo}
-            onCalibrateHeight={handleCalibrateHeight}
-            onCalibrateObject={handleCalibrateObject}
-            onResetCalibration={handleResetCalibration}
-            distancePickerActive={distancePickerActive}
-            onToggleDistancePicker={handleToggleDistancePicker}
-            distancePickerObjects={distancePickerObjects}
-            onClose={() => {
-              setShowMeasurementPanel(false);
-              setDistancePickerActive(false);
-              setDistancePickerObjects([]);
-            }}
-          />
-        )}
-        {showAssistantPanel && (
-          <AssistantPanel objects={objects} placedItems={placedItems} settings={viewSettings} onClose={() => setShowAssistantPanel(false)} onAutoPlace={handleAutoPlace} onHoverRec={setActiveHoverRec} />
-        )}
-        {showGraphPanel && (
-          <SceneGraphPanel objects={objects} placedItems={placedItems} settings={viewSettings} onClose={() => setShowGraphPanel(false)}
-            onHoverNode={(source, target) => { setActiveGraphSource(source); setActiveGraphTarget(target); }} url={graphUrl} />
-        )}
-        {showWalkablePanel && (
-          <WalkablePanel analytics={walkableAnalytics} onClose={() => setShowWalkablePanel(false)} />
-        )}
+        {/* Right Sidebar / Inspector container */}
+        {!presentationMode && hasScene && (showMeasurementPanel || showAssistantPanel || showGraphPanel || selectedItem) ? (
+          <div className="right-inspector-container">
+            <AnimatePresence mode="wait">
+              {showMeasurementPanel && (
+                <MeasurementPanel
+                  key="measurement"
+                  objects={objects}
+                  placedItems={placedItems}
+                  selectedId={selectedId}
+                  onSelect={handleSelectObject}
+                  roomAnalysis={roomAnalysis}
+                  pcStats={pcStats}
+                  scaleFactor={scaleFactor}
+                  calibrationInfo={calibrationInfo}
+                  onCalibrateHeight={handleCalibrateHeight}
+                  onCalibrateObject={handleCalibrateObject}
+                  onResetCalibration={handleResetCalibration}
+                  distancePickerActive={distancePickerActive}
+                  onToggleDistancePicker={handleToggleDistancePicker}
+                  distancePickerObjects={distancePickerObjects}
+                  onClose={() => {
+                    setShowMeasurementPanel(false);
+                    setDistancePickerActive(false);
+                    setDistancePickerObjects([]);
+                  }}
+                />
+              )}
+              {showAssistantPanel && (
+                <AssistantPanel 
+                  key="assistant"
+                  objects={objects} 
+                  placedItems={placedItems} 
+                  settings={viewSettings} 
+                  walkableAnalytics={walkableAnalytics}
+                  onClose={() => setShowAssistantPanel(false)} 
+                  onAutoPlace={handleAutoPlace} 
+                  onHoverRec={setActiveHoverRec} 
+                />
+              )}
+              {showGraphPanel && (
+                <SceneGraphPanel 
+                  key="graph"
+                  objects={objects} 
+                  placedItems={placedItems} 
+                  settings={viewSettings} 
+                  setSettings={setViewSettings}
+                  onClose={() => setShowGraphPanel(false)}
+                  onHoverNode={(source, target) => { setActiveGraphSource(source); setActiveGraphTarget(target); }} 
+                  url={graphUrl} 
+                />
+              )}
 
-        {selectedItem && (
-          <ObjectProperties
-            object={selectedItem}
-            onClose={() => setSelectedId(null)}
-            onUpdate={handleUpdateObject}
-            onDelete={handleDeleteObject}
-            onDuplicate={handleDuplicatePlaced}
-            transformMode={transformMode}
-            onTransformModeChange={setTransformMode}
-            floorHeight={viewSettings.floorHeight}
-            isHardcodedDemo={isHardcodedDemo}
-            compareOriginal={compareOriginal}
-            onOpenReplaceLibrary={(id) => {
-              setReplacingObjectId(id);
-              setShowLibrary(true);
-            }}
-            onSnapToWall={handleSnapToWall}
-            onResetObject={handleResetObject}
-          />
-        )}
+              {selectedItem && (
+                <ObjectProperties
+                  key="properties"
+                  object={selectedItem}
+                  onClose={() => setSelectedId(null)}
+                  onUpdate={handleUpdateObject}
+                  onDelete={handleDeleteObject}
+                  onDuplicate={handleDuplicatePlaced}
+                  transformMode={transformMode}
+                  onTransformModeChange={setTransformMode}
+                  floorHeight={viewSettings.floorHeight}
+                  isHardcodedDemo={isHardcodedDemo}
+                  onOpenReplaceLibrary={(id) => {
+                    setReplacingObjectId(id);
+                    setShowLibrary(true);
+                  }}
+                  onSnapToWall={handleSnapToWall}
+                  onResetObject={handleResetObject}
+                />
+              )}
+            </AnimatePresence>
+          </div>
+        ) : null}
         {showMultiVideoUpload && (
           <MultiVideoUpload
             onUpload={handleUploadFullHouse}
@@ -2919,7 +2898,7 @@ function App() {
 
         {showExportModal && (
           <div style={{
-            position: 'absolute', inset: 0, background: 'rgba(8,11,18,0.85)',
+            position: 'fixed', inset: 0, background: 'rgba(8,11,18,0.85)',
             backdropFilter: 'blur(12px)', zIndex: 100,
             display: 'flex', alignItems: 'center', justifyContent: 'center'
           }}>
@@ -2970,7 +2949,7 @@ function App() {
       </AnimatePresence>
 
       <ControlsHelp mode={cameraMode} />
-    </>
+    </div>
   );
 }
 

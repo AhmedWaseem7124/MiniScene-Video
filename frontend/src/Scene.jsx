@@ -1210,11 +1210,42 @@ function HardcodedDemoFurniture({ item, selected, onSelect, onUpdate, transformM
       <group scale={[1, 1, 1]} position={[0, -0.5, 0]}>
         {getModelForHardcoded()}
       </group>
-      {selected && !compareOriginal && (
+      {((selected || viewSettings?.showBoundingBoxes) && !compareOriginal) && (
         <lineSegments>
           <edgesGeometry args={[new THREE.BoxGeometry(1.01, 1.01, 1.01)]} />
-          <lineBasicMaterial color="#06b6d4" linewidth={2} depthWrite={false} transparent opacity={0.8} />
+          <lineBasicMaterial 
+            color={selected ? "#06b6d4" : "rgba(6, 182, 212, 0.4)"} 
+            depthWrite={false} 
+            transparent 
+            opacity={selected ? 0.8 : 0.45} 
+          />
         </lineSegments>
+      )}
+      {((viewSettings?.showLabels || selected) && !compareOriginal) && (
+        <Html
+          position={[0, 0.6, 0]}
+          center
+          distanceFactor={8}
+          style={{ pointerEvents: 'none', userSelect: 'none' }}
+        >
+          <div style={{
+            background: selected ? 'rgba(99,102,241,0.92)' : 'rgba(15, 23, 42, 0.85)',
+            color: 'white',
+            padding: '4px 10px',
+            borderRadius: 6,
+            fontSize: 11,
+            fontFamily: "'Outfit', sans-serif",
+            fontWeight: 700,
+            whiteSpace: 'nowrap',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+            border: `1px solid ${selected ? 'rgba(165,180,252,0.5)' : 'rgba(255,255,255,0.1)'}`,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
+          }}>
+            <span style={{ textTransform: 'capitalize' }}>{(item.name || item.type || 'Furniture').replace(/_/g, ' ')}</span>
+          </div>
+        </Html>
       )}
     </group>
   );
@@ -1398,11 +1429,42 @@ function DetectedFurniture({ item, selected, onSelect, onUpdate, transformMode, 
       <group scale={modelScale} position={modelOffset}>
         {renderModel(item.type)}
       </group>
-      {selected && !compareOriginal && (
+      {((selected || viewSettings?.showBoundingBoxes) && !compareOriginal) && (
         <lineSegments>
           <edgesGeometry args={[new THREE.BoxGeometry(1.01, 1.01, 1.01)]} />
-          <lineBasicMaterial color="#06b6d4" linewidth={2} depthWrite={false} transparent opacity={0.8} />
+          <lineBasicMaterial 
+            color={selected ? "#06b6d4" : "rgba(6, 182, 212, 0.4)"} 
+            depthWrite={false} 
+            transparent 
+            opacity={selected ? 0.8 : 0.45} 
+          />
         </lineSegments>
+      )}
+      {((viewSettings?.showLabels || selected) && !compareOriginal) && (
+        <Html
+          position={[0, 0.6, 0]}
+          center
+          distanceFactor={8}
+          style={{ pointerEvents: 'none', userSelect: 'none' }}
+        >
+          <div style={{
+            background: selected ? 'rgba(99,102,241,0.92)' : 'rgba(15, 23, 42, 0.85)',
+            color: 'white',
+            padding: '4px 10px',
+            borderRadius: 6,
+            fontSize: 11,
+            fontFamily: "'Outfit', sans-serif",
+            fontWeight: 700,
+            whiteSpace: 'nowrap',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+            border: `1px solid ${selected ? 'rgba(165,180,252,0.5)' : 'rgba(255,255,255,0.1)'}`,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
+          }}>
+            <span style={{ textTransform: 'capitalize' }}>{(item.name || item.type || 'Furniture').replace(/_/g, ' ')}</span>
+          </div>
+        </Html>
       )}
     </group>
   );
@@ -1647,11 +1709,42 @@ function PlacedFurniture({ item, selected, onSelect, onUpdate, transformMode, is
       <group scale={modelScale} position={modelOffset}>
         {renderModel(item.type)}
       </group>
-      {selected && !compareOriginal && (
+      {((selected || viewSettings?.showBoundingBoxes) && !compareOriginal) && (
         <lineSegments>
           <edgesGeometry args={[new THREE.BoxGeometry(1.01, 1.01, 1.01)]} />
-          <lineBasicMaterial color="#06b6d4" linewidth={2} depthWrite={false} transparent opacity={0.8} />
+          <lineBasicMaterial 
+            color={selected ? "#06b6d4" : "rgba(6, 182, 212, 0.4)"} 
+            depthWrite={false} 
+            transparent 
+            opacity={selected ? 0.8 : 0.45} 
+          />
         </lineSegments>
+      )}
+      {((viewSettings?.showLabels || selected) && !compareOriginal) && (
+        <Html
+          position={[0, 0.6, 0]}
+          center
+          distanceFactor={8}
+          style={{ pointerEvents: 'none', userSelect: 'none' }}
+        >
+          <div style={{
+            background: selected ? 'rgba(99,102,241,0.92)' : 'rgba(15, 23, 42, 0.85)',
+            color: 'white',
+            padding: '4px 10px',
+            borderRadius: 6,
+            fontSize: 11,
+            fontFamily: "'Outfit', sans-serif",
+            fontWeight: 700,
+            whiteSpace: 'nowrap',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+            border: `1px solid ${selected ? 'rgba(165,180,252,0.5)' : 'rgba(255,255,255,0.1)'}`,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
+          }}>
+            <span style={{ textTransform: 'capitalize' }}>{(item.name || item.type || 'Furniture').replace(/_/g, ' ')}</span>
+          </div>
+        </Html>
       )}
     </group>
   );
@@ -2933,7 +3026,7 @@ export default function Scene({
               />
             )}
 
-            {showWalkablePanel && isSceneVisible && (
+            {(showWalkablePanel || viewSettings?.showWalkableOverlay) && isSceneVisible && (
               <WalkableOverlay
                 settings={viewSettings}
                 objects={activeAlignedObjects}
@@ -2946,7 +3039,7 @@ export default function Scene({
               <RecommendationOverlay activeRec={activeHoverRec} settings={viewSettings} objects={activeAlignedObjects} placedItems={compareOriginal ? [] : placedItems} />
             )}
 
-            {showGraphPanel && isSceneVisible && !presentationMode && (
+            {(showGraphPanel || viewSettings?.showRelationLines) && isSceneVisible && !presentationMode && (
               <GraphOverlay
                 objects={activeAlignedObjects}
                 placedItems={compareOriginal ? [] : placedItems}

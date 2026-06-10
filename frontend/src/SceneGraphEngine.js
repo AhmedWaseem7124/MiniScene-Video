@@ -37,8 +37,25 @@ export function generateSceneGraph(objects, placedItems, settings) {
       const clearance = distXZ - (rA + rB);
 
       let relation = null;
+      const aLabel = a.label?.toLowerCase() || '';
+      const bLabel = b.label?.toLowerCase() || '';
 
-      if (dy > (a.size[1]/2 + b.size[1]/2 - 0.1) && distXZ < Math.max(a.size[0], a.size[2])) {
+      // High-fidelity fallback rules
+      if ((aLabel.includes('rug') || aLabel.includes('carpet')) && 
+          (bLabel.includes('sofa') || bLabel.includes('table') || bLabel.includes('chair') || bLabel.includes('bed') || bLabel.includes('armchair')) &&
+          distXZ < Math.max(a.size[0], a.size[2]) * 1.2) {
+        relation = "under"; // Rug is under Sofa
+      } else if (aLabel.includes('chair') && bLabel.includes('table') && clearance < 1.5) {
+        relation = "around"; // Chair is around Table
+      } else if (aLabel.includes('tv') && bLabel.includes('sofa') && clearance < 3.5) {
+        relation = "facing"; // TV is facing Sofa
+      } else if (aLabel.includes('bed') && 
+                 (bLabel.includes('nightstand') || bLabel.includes('side') || bLabel.includes('drawer') || bLabel.includes('table')) && 
+                 clearance < 1.2) {
+        relation = "beside"; // Bed is beside Nightstand
+      } else if (aLabel.includes('sink') && bLabel.includes('window') && clearance < 1.2) {
+        relation = "under"; // Sink is under Window
+      } else if (dy > (a.size[1]/2 + b.size[1]/2 - 0.1) && distXZ < Math.max(a.size[0], a.size[2])) {
         relation = "on_top_of"; // b is on top of a
       } else if (clearance < 0.2) {
         relation = "attached_to";
@@ -54,7 +71,7 @@ export function generateSceneGraph(objects, placedItems, settings) {
       }
 
       // Special facing rule for placed objects with rotation (rough heuristic)
-      if (a.rotation[1] !== 0 && clearance < 3) {
+      if (!relation && a.rotation[1] !== 0 && clearance < 3) {
         const dirX = Math.sin(a.rotation[1]);
         const dirZ = Math.cos(a.rotation[1]);
         const dot = (dx * dirX + dz * dirZ) / distXZ;

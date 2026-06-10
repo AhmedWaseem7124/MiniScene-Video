@@ -240,28 +240,24 @@ export default function MeasurementPanel({
 
   return (
     <motion.div
-      initial={{ x: -320 }}
+      initial={{ x: 360 }}
       animate={{ x: 0 }}
-      exit={{ x: -320 }}
-      className="glass-panel"
+      exit={{ x: 360 }}
+      className="right-inspector-panel"
       style={{
-        position: 'absolute',
-        top: 60,
-        left: 24,
-        zIndex: 45,
-        width: 320,
-        height: 'auto',
-        maxHeight: '85vh',
         display: 'flex',
         flexDirection: 'column',
+        height: '100%',
+        width: '100%',
+        overflow: 'hidden'
       }}
     >
-      <div className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Ruler size={20} color="#06b6d4" />
-          <h2 style={{ fontSize: '1.1rem' }}>Sizing & Measurements</h2>
+          <Ruler size={18} color="var(--teal)" />
+          <h2 style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>Sizing & Measurements</h2>
         </div>
-        <button onClick={onClose} className="action-btn">✕</button>
+        <button onClick={onClose} className="action-btn" style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '50%', padding: 5 }}>✕</button>
       </div>
 
       <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto', flex: 1 }}>
@@ -416,7 +412,7 @@ export default function MeasurementPanel({
 
         {/* Selected Object Details */}
         <div>
-          <div className="section-label" style={{ marginBottom: 8 }}>Object Dimensions</div>
+          <div className="section-label" style={{ marginBottom: 8 }}>Selected Object Dimensions</div>
           {selectedObjDetails ? (
             <div style={{ background: 'rgba(255,255,255,0.02)', padding: 12, borderRadius: 8, border: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -432,25 +428,35 @@ export default function MeasurementPanel({
                   fontSize: '0.62rem',
                   fontWeight: 600
                 }}>
-                  {selectedObjDetails.quality === 'estimated' ? 'Estimated' : 'Measured'}
+                  {selectedObjDetails.type === 'placed' ? 'Placed' : 'Detected'}
                 </span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: '0.75rem' }}>
                 {(() => {
                   const suffix = calibrationInfo.status === 'Calibrated' ? ' (Calibrated)' : ' (Estimated)';
+                  const w = selectedObjDetails.size ? selectedObjDetails.size[0] * scaleFactor : null;
+                  const h = selectedObjDetails.size ? selectedObjDetails.size[1] * scaleFactor : null;
+                  const d = selectedObjDetails.size ? selectedObjDetails.size[2] * scaleFactor : null;
+                  const pos = selectedObjDetails.position;
                   return (
                     <>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                         <span style={{ color: 'var(--text-muted)' }}>Width:</span>
-                        <span>{selectedObjDetails.w.toFixed(2)} m{suffix}</span>
+                        <span>{w !== null ? `${w.toFixed(2)}m${suffix}` : 'Not available'}</span>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                         <span style={{ color: 'var(--text-muted)' }}>Height:</span>
-                        <span>{selectedObjDetails.h.toFixed(2)} m{suffix}</span>
+                        <span>{h !== null ? `${h.toFixed(2)}m${suffix}` : 'Not available'}</span>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                         <span style={{ color: 'var(--text-muted)' }}>Depth:</span>
-                        <span>{selectedObjDetails.d.toFixed(2)} m{suffix}</span>
+                        <span>{d !== null ? `${d.toFixed(2)}m${suffix}` : 'Not available'}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--border)', paddingTop: 4, marginTop: 4 }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Position:</span>
+                        <span>
+                          {pos ? `X:${pos[0].toFixed(1)} Y:${pos[1].toFixed(1)} Z:${pos[2].toFixed(1)}` : 'Not available'}
+                        </span>
                       </div>
                     </>
                   );
@@ -465,6 +471,49 @@ export default function MeasurementPanel({
               Select an object in the scene to view dimensions
             </div>
           )}
+        </div>
+
+        {/* All Object Measurements Table */}
+        <div>
+          <div className="section-label" style={{ marginBottom: 8 }}>All Object Measurements</div>
+          <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden', maxHeight: '180px', overflowY: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', textAlign: 'left' }}>
+              <thead>
+                <tr style={{ background: 'rgba(255,255,255,0.03)', borderBottom: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+                  <th style={{ padding: '6px 8px' }}>Object</th>
+                  <th style={{ padding: '6px 8px' }}>W</th>
+                  <th style={{ padding: '6px 8px' }}>H</th>
+                  <th style={{ padding: '6px 8px' }}>D</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allObjects.map((obj, idx) => {
+                  const w = obj.size ? (obj.size[0] * scaleFactor).toFixed(1) + 'm' : 'Not available';
+                  const h = obj.size ? (obj.size[1] * scaleFactor).toFixed(1) + 'm' : 'Not available';
+                  const d = obj.size ? (obj.size[2] * scaleFactor).toFixed(1) + 'm' : 'Not available';
+                  const isSelected = obj.id === selectedId;
+                  return (
+                    <tr 
+                      key={obj.id || idx} 
+                      onClick={() => onSelect(obj.id)}
+                      style={{ 
+                        borderBottom: '1px solid rgba(255,255,255,0.03)', 
+                        cursor: 'pointer',
+                        background: isSelected ? 'rgba(6,182,212,0.1)' : 'transparent',
+                        color: isSelected ? 'var(--teal)' : 'var(--text-main)',
+                        fontWeight: isSelected ? 600 : 400
+                      }}
+                    >
+                      <td style={{ padding: '6px 8px', textTransform: 'capitalize', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100px' }}>{obj.label}</td>
+                      <td style={{ padding: '6px 8px' }}>{w}</td>
+                      <td style={{ padding: '6px 8px' }}>{h}</td>
+                      <td style={{ padding: '6px 8px' }}>{d}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         {/* Distance Calculators */}

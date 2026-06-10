@@ -58,7 +58,7 @@ export default function CreateScratchModal({ onCreate, onClose }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       style={{
-        position: 'absolute',
+        position: 'fixed',
         inset: 0,
         background: 'rgba(8,11,18,0.85)',
         backdropFilter: 'blur(12px)',

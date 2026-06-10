@@ -201,18 +201,12 @@ export default function ObjectProperties({
       animate={{ x: 0 }}
       exit={{ x: 360 }}
       transition={{ type: 'spring', stiffness: 280, damping: 28 }}
-      className="glass-panel"
-      style={{ 
-        position: 'absolute', 
-        top: 0, 
-        right: 0, 
-        bottom: 0, 
-        zIndex: 50, 
-        width: 320,
-        boxShadow: '-4px 0 24px rgba(0,0,0,0.5)',
-        borderLeft: '1px solid rgba(255, 255, 255, 0.1)',
+      className="right-inspector-panel"
+      style={{
         display: 'flex',
         flexDirection: 'column',
+        height: '100%',
+        width: '100%',
         overflow: 'hidden'
       }}
     >

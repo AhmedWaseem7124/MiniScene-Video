@@ -4,9 +4,22 @@ export function generateWalkableMap(objects, placedItems, settings) {
   const width = 10 * settings.roomScale;
   const depth = 10 * settings.roomScale;
   
+  const isExcluded = (label) => {
+    if (!label) return false;
+    const l = label.toLowerCase();
+    return l.includes('wall') || l.includes('ceiling') || l.includes('decor') || 
+           l.includes('light') || l.includes('painting') || l.includes('window') || 
+           l.includes('door') || l.includes('pillow') || l.includes('book') || 
+           l.includes('vase') || l.includes('clock') || l.includes('curtain') ||
+           l.includes('mirror') || l.includes('artwork');
+  };
+
+  const filteredObjects = objects.filter(o => !isExcluded(o.label));
+  const filteredPlaced = placedItems.filter(p => !isExcluded(p.name) && !isExcluded(p.type));
+
   const allObjects = [
-    ...objects.map(o => ({ center: o.box_3d?.center || [0,0,0], size: o.box_3d?.size || [1,1,1] })),
-    ...placedItems.map(p => ({ center: p.position, size: p.scale }))
+    ...filteredObjects.map(o => ({ label: o.label, center: o.box_3d?.center || [0,0,0], size: o.box_3d?.size || [1,1,1] })),
+    ...filteredPlaced.map(p => ({ label: p.name, center: p.position, size: p.scale || p.size || [1,1,1] }))
   ];
 
   const gridSize = 100; // 100x100 grid
